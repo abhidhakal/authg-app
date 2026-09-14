@@ -1,0 +1,80 @@
+# =============================================================================
+# AuthG — Comprehensive Git Ignore
+# =============================================================================
+
+# Node dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Production builds
+dist/
+dist-ssr/
+build/
+
+# Rust / Tauri build targets & artifacts
+src-tauri/target/
+*.bundle/
+*.dmg
+*.app
+*.exe
+*.msi
+*.deb
+*.rpm
+*.AppImage
+
+# Secrets & Environment variables (NEVER commit secrets!)
+.env
+.env.*
+!.env.example
+*.env
+*.env.local
+
+# Private Keys & Certificates (Tauri updater & code signing)
+*.key
+*.pem
+*.p12
+*.p8
+*.cer
+*.crt
+*.pfx
+*.keystore
+*.provisionprofile
+TAURI_PRIVATE_KEY*
+TAURI_KEY*
+
+# Local encrypted 2FA vaults and export backups
+*.enc
+*.vault
+vault.enc
+test_vault*.enc
+*.authg
+*.authdesk
+
+# Logs & Debugging
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS & Filesystem Metadata
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs & Editor Configuration
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.bak
