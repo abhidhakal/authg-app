@@ -26,6 +26,7 @@ import {
   Heart,
   Globe,
   ExternalLink,
+  Power,
 } from "lucide-react";
 import {
   OtpAccount,
@@ -319,6 +320,9 @@ export function App() {
         setTimeout(() => {
           document.getElementById("search-accounts-input")?.focus();
         }, 50);
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "q") {
+        e.preventDefault();
+        tauriInvoke("quit_app").catch(() => {});
       }
     }
 
@@ -1052,6 +1056,28 @@ export function App() {
                 </div>
               </div>
             </section>
+
+            {/* Section 6: Application Control */}
+            <section>
+              <div className="wm-section-title">Application</div>
+              <div className="wm-settings-card">
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>Quit AuthG</div>
+                    <div style={{ fontSize: 11, color: "var(--muted)" }}>Terminate background menu bar app (⌘Q)</div>
+                  </div>
+                  <button
+                    type="button"
+                    id="settings-quit-btn"
+                    className="wm-btn-danger"
+                    style={{ fontSize: 11, padding: "5px 12px", gap: 5, borderRadius: 6, display: "inline-flex", alignItems: "center" }}
+                    onClick={() => tauriInvoke("quit_app").catch(() => {})}
+                  >
+                    <Power size={12} /> Quit App
+                  </button>
+                </div>
+              </div>
+            </section>
           </main>
         </>
       ) : currentView === "help" ? (
@@ -1273,10 +1299,19 @@ export function App() {
               <button
                 id="minimize-window-btn"
                 className="wm-btn-icon"
-                title="Minimize"
+                title="Minimize (Hide)"
                 onClick={() => tauriInvoke("hide_main_window").catch(() => {})}
               >
                 <Minus size={13} />
+              </button>
+
+              <button
+                id="header-quit-btn"
+                className="wm-btn-icon"
+                title="Quit AuthG (⌘Q)"
+                onClick={() => tauriInvoke("quit_app").catch(() => {})}
+              >
+                <Power size={12} />
               </button>
             </div>
           </header>
