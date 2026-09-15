@@ -322,6 +322,7 @@ body {
 
 .wm-card.copied {
   border-color: var(--primary-emerald);
+  background: rgba(16, 185, 129, 0.06);
 }
 
 .wm-card-left {
@@ -329,6 +330,7 @@ body {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  flex: 1;
 }
 
 .wm-account-info {
@@ -357,7 +359,8 @@ body {
 .wm-card-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .wm-code {
@@ -372,6 +375,38 @@ body {
 
 .wm-code.urgent {
   color: var(--primary);
+}
+
+.wm-code-copied {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: var(--primary-emerald);
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(16, 185, 129, 0.12);
+  animation: wm-pop 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes wm-pop {
+  0% { transform: scale(0.92); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.wm-card-info-btn {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, background-color 0.12s ease;
+}
+
+.wm-card:hover .wm-card-info-btn,
+.wm-card-info-btn:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .wm-copy-btn {

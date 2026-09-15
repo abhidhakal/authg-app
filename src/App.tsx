@@ -5,7 +5,6 @@ import {
   Plus,
   Lock,
   Unlock,
-  Copy,
   Check,
   Trash2,
   QrCode,
@@ -1373,11 +1372,15 @@ export function App() {
                     id={`account-card-${acc.id}`}
                     className={`wm-card ${isCopied ? "copied" : ""}`}
                     onClick={() => copyCode(raw, acc.id)}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedAccount(acc);
+                    }}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       setSelectedAccount(acc);
                     }}
-                    title="Click to copy code • Right-click for details"
+                    title="Click to copy • Double-click or right-click for details"
                   >
                     <div className="wm-card-left">
                       <div className="wm-account-info">
@@ -1387,18 +1390,25 @@ export function App() {
                     </div>
 
                     <div className="wm-card-right">
-                      <span
-                        className={`wm-code ${secondsRemaining <= 5 ? "urgent" : ""}`}
-                        style={{
-                          filter: settings.privacyMode ? "blur(4px)" : "none",
-                          transition: "filter 0.15s ease",
-                        }}
-                      >
-                        {formatted}
-                      </span>
+                      {isCopied ? (
+                        <span className="wm-code-copied">
+                          <Check size={14} />
+                          <span>COPIED</span>
+                        </span>
+                      ) : (
+                        <span
+                          className={`wm-code ${secondsRemaining <= 5 ? "urgent" : ""}`}
+                          style={{
+                            filter: settings.privacyMode ? "blur(4px)" : "none",
+                            transition: "filter 0.15s ease",
+                          }}
+                        >
+                          {formatted}
+                        </span>
+                      )}
                       <button
                         id={`details-btn-${acc.id}`}
-                        className="wm-btn-icon"
+                        className="wm-btn-icon wm-card-info-btn"
                         title="Account details"
                         style={{ padding: 4 }}
                         onClick={(e) => {
@@ -1406,18 +1416,7 @@ export function App() {
                           setSelectedAccount(acc);
                         }}
                       >
-                        <Info size={12} />
-                      </button>
-                      <button
-                        id={`copy-btn-${acc.id}`}
-                        className={`wm-copy-btn ${isCopied ? "copied" : ""}`}
-                        title={isCopied ? "Copied!" : "Copy code"}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          copyCode(raw, acc.id);
-                        }}
-                      >
-                        {isCopied ? <Check size={13} /> : <Copy size={13} />}
+                        <Info size={13} />
                       </button>
                     </div>
                   </div>
