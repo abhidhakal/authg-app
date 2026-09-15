@@ -203,6 +203,12 @@ fn read_image_base64(path: String) -> Result<String, String> {
 
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
+use tauri::menu::{Menu, MenuItem};
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
 
 #[tauri::command]
 fn set_open_at_login(app: tauri::AppHandle, enable: bool) -> Result<(), String> {
@@ -253,7 +259,11 @@ pub fn run() {
                 let _ = autolaunch.enable();
             }
 
-            // Build system tray icon for menu bar / system tray
+            // Build system tray menu & icon
+            let toggle_item = MenuItem::with_id(app, "toggle", "Open / Hide AuthG", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit AuthG", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&toggle_item, &quit_item])?;
+
             let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
                 .ok()
                 .or_else(|| app.default_window_icon().cloned());
@@ -263,6 +273,26 @@ pub fn run() {
                     .icon(icon)
                     .icon_as_template(true)
                     .tooltip("AuthG - Google Authenticator for Desktop")
+                    .menu(&tray_menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| {
+                        match event.id.as_ref() {
+                            "quit" => {
+                                app.exit(0);
+                            }
+                            "toggle" => {
+                                if let Some(window) = app.get_webview_window("main") {
+                                    if window.is_visible().unwrap_or(false) {
+                                        let _ = window.hide();
+                                    } else {
+                                        let _ = window.show();
+                                        let _ = window.set_focus();
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    })
                     .on_tray_icon_event(|tray, event| {
                         if let TrayIconEvent::Click {
                             button: MouseButton::Left,
@@ -315,6 +345,7 @@ pub fn run() {
             read_image_base64,
             set_open_at_login,
             is_open_at_login,
+            quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
