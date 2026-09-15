@@ -39,7 +39,7 @@
 
 Two-factor authentication is mandatory for security, but the mobile workflow breaks developer focus: unlocking phones, waiting on biometric prompts, and memorizing 6 digits under a 30-second ticking clock.
 
-**AuthG** bridges this gap by bringing Google Authenticator to your desktop. It lives in your macOS Menu Bar or Windows System Tray, summons instantly via global hotkey (`⌘ + Shift + A`), and computes mathematical TOTP tokens 100% offline.
+**AuthG** bridges this gap by bringing Google Authenticator to your desktop. It lives in your macOS Menu Bar or Windows System Tray, opens in one click, and computes mathematical TOTP tokens 100% offline.
 
 ```
                     ┌─────────────────────────────────────────┐
@@ -57,7 +57,7 @@ Two-factor authentication is mandatory for security, but the mobile workflow bre
                  ▼                                               ▼
    ┌───────────────────────────┐                   ┌───────────────────────────┐
    │    Local Encrypted Vault  │                   │    Menu Bar Access        │
-   │  PBKDF2 + AES-256-GCM     │                   │  Sub-second ⌘ + Shift + A │
+   │  PBKDF2 + AES-256-GCM     │                   │  One-click from top bar   │
    │  Stored on local SSD only │                   │  Click to copy 6 digits   │
    └───────────────────────────┘                   └───────────────────────────┘
 ```
@@ -69,7 +69,7 @@ Two-factor authentication is mandatory for security, but the mobile workflow bre
 - **Instant `⌘V` Paste Import**: Simply snap a screenshot of Google Authenticator's export QR code and hit `⌘V`. AuthG decodes protobuf payloads directly on your CPU in under a second.
 - **100% Offline & Private**: Zero telemetry, zero analytics, and zero network calls. Your credentials never touch an external server or cloud database.
 - **Hardware-Accelerated Encryption**: Vaults are encrypted using `AES-256-GCM` with keys derived via `PBKDF2-HMAC-SHA256` (600,000 iterations) from your master PIN.
-- **Native Menu Bar & Tray Residency**: Built on Tauri v2 and Rust. Uses under 20MB of RAM and remains completely unobtrusive until summoned.
+- **Native Menu Bar & Tray Residency**: Built on Tauri v2 and Rust. Uses under 20MB of RAM and remains completely unobtrusive until clicked.
 - **RFC 6238 Mathematical Compliance**: 100% identical to Google Authenticator. Compatible with HMAC-SHA1, SHA256, SHA512, 6-digit, and 8-digit TOTP tokens.
 - **Privacy Mode**: Built-in screen blur hides 6-digit codes during Zoom meetings or in public coffee shops until you hover over them.
 - **Guarded Account Details & Deletion**: Destructive actions are isolated behind dedicated confirmation flows to prevent accidental token loss.
@@ -77,11 +77,11 @@ Two-factor authentication is mandatory for security, but the mobile workflow bre
 
 ---
 
-## Keyboard Shortcuts
+## Shortcuts & Controls
 
-| Shortcut | Scope | Description |
+| Action | Scope | Description |
 | :--- | :--- | :--- |
-| `⌘ + Shift + A` | **Global** | Toggle AuthG window from any desktop app |
+| `Menu Bar / Tray` | **Global** | Click icon to toggle AuthG popup |
 | `⌘ + V` | **App** | Automatically parse & import QR screenshot from clipboard |
 | `⌘ + K` or `/` | **App** | Instantly focus the account search filter |
 | `Click Card` | **App** | Copy 6-digit TOTP code to clipboard |

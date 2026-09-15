@@ -882,10 +882,10 @@ export function App() {
 
                 <div className="wm-setting-row">
                   <div className="wm-setting-info">
-                    <span className="wm-setting-title">Global Hotkey</span>
-                    <span className="wm-setting-desc">Press anytime to toggle AuthG window</span>
+                    <span className="wm-setting-title">Quick Access</span>
+                    <span className="wm-setting-desc">Click menu bar icon or system tray anytime</span>
                   </div>
-                  <span className="wm-badge">⌘ + Shift + A</span>
+                  <span className="wm-badge">Menu Bar</span>
                 </div>
               </div>
             </section>
@@ -1160,8 +1160,8 @@ export function App() {
                     <span className="wm-badge">Right-click / (i)</span>
                   </div>
                   <div className="wm-setting-row">
-                    <span className="wm-setting-title">Global App Toggle</span>
-                    <span className="wm-badge">⌘ + Shift + A</span>
+                    <span className="wm-setting-title">Quick Access</span>
+                    <span className="wm-badge">Menu Bar / Tray</span>
                   </div>
                 </div>
               </div>
