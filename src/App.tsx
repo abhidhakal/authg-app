@@ -671,33 +671,67 @@ export function App() {
   }
 
   async function handleUnlock() {
-    if (!pinInput) {
-      showToast("Please enter master passcode");
-      return;
-    }
     setIsDecrypting(true);
+    const pinToTry = pinInput.trim();
     try {
-      const loaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault", { pin: pinInput });
+      // First attempt to decrypt with the entered passcode (or empty string if left blank)
+      const loaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault", { pin: pinToTry });
       setAccounts(loaded);
-      setVaultPin(pinInput);
+      setVaultPin(pinToTry);
       setIsLocked(false);
       setPinInput("");
       setHasVaultOnDisk(true);
       showToast("Vault unlocked");
+      return;
     } catch {
-      showToast("Incorrect passcode. Could not decrypt vault.");
+      // If user typed something but it failed, check if vault was actually passwordless
+      if (pinToTry !== "") {
+        try {
+          const loaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault", { pin: "" });
+          setAccounts(loaded);
+          setVaultPin("");
+          setIsLocked(false);
+          setPinInput("");
+          setHasVaultOnDisk(true);
+          showToast("Vault unlocked (no passcode set)");
+          return;
+        } catch {}
+      }
+      showToast(pinToTry ? "Incorrect passcode. Could not decrypt vault." : "Please enter master passcode");
     } finally {
       setIsDecrypting(false);
     }
   }
 
   function handleLock() {
+    if (!vaultPin) {
+      showToast("Set a master passcode in Settings to lock your vault");
+      setCurrentView("settings");
+      return;
+    }
     setIsLocked(true);
     setAccounts([]);
     setCodes({});
     setVaultPin("");
     setPinInput("");
     showToast("Vault locked");
+  }
+
+  async function handleResetLockedVault() {
+    if (
+      window.confirm(
+        "Reset local vault?\n\nIf you forgot your passcode or got locked out, this will permanently wipe the local encrypted vault so you can start fresh.\n\nAll accounts in the vault will be removed."
+      )
+    ) {
+      await tauriInvoke("wipe_vault").catch(() => {});
+      setAccounts([]);
+      setCodes({});
+      setVaultPin("");
+      setHasVaultOnDisk(false);
+      setIsLocked(false);
+      setPinInput("");
+      showToast("Vault reset successfully");
+    }
   }
 
   async function handleChangePin() {
@@ -839,9 +873,9 @@ export function App() {
     }
   }
 
-  // Auto-lock on user inactivity
+  // Auto-lock on user inactivity (only active when vault is protected with a PIN)
   useEffect(() => {
-    if (isLocked || !settings.autoLockMinutes || settings.autoLockMinutes <= 0) return;
+    if (isLocked || !settings.autoLockMinutes || settings.autoLockMinutes <= 0 || !vaultPin) return;
 
     let timeoutId: ReturnType<typeof setTimeout>;
 
@@ -919,6 +953,24 @@ export function App() {
             >
               {isDecrypting ? "Decrypting..." : "Unlock"}
             </button>
+            <div style={{ marginTop: 14 }}>
+              <button
+                type="button"
+                id="reset-locked-vault-btn"
+                onClick={handleResetLockedVault}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "var(--muted)",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  textDecoration: "underline",
+                  padding: "4px 8px"
+                }}
+              >
+                Forgot passcode? Reset vault
+              </button>
+            </div>
           </div>
         </div>
       ) : currentView === "settings" ? (
@@ -1541,11 +1593,14 @@ export function App() {
               <button
                 id="toggle-lock-btn"
                 className={`wm-btn-icon ${isLocked ? "active" : ""}`}
-                title={isLocked ? "Vault is Locked" : "Lock Vault"}
+                title={isLocked ? "Vault is Locked" : vaultPin ? "Lock Vault" : "Set Passcode to Lock"}
                 onClick={() => {
                   if (isLocked) {
                     const el = document.getElementById("pin-unlock-input");
                     if (el) el.focus();
+                  } else if (!vaultPin) {
+                    showToast("Set a master passcode in Settings to lock your vault");
+                    setCurrentView("settings");
                   } else {
                     handleLock();
                   }
