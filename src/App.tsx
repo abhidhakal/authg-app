@@ -27,6 +27,9 @@ import {
   Globe,
   ExternalLink,
   Power,
+  RefreshCw,
+  Download,
+  Sparkles,
 } from "lucide-react";
 import {
   OtpAccount,
@@ -61,6 +64,7 @@ interface AppSettings {
   openAtLogin: boolean;
   privacyMode: boolean;
   clipboardTimeoutSec: number;
+  autoLockMinutes: number;
   theme: "dark" | "light" | "system";
   accentColor: "monochrome" | "titanium" | "slate" | "graphite" | "onyx";
 }
@@ -72,23 +76,15 @@ const DEFAULT_SETTINGS: AppSettings = {
   openAtLogin: true,
   privacyMode: false,
   clipboardTimeoutSec: 30,
+  autoLockMinutes: 15,
   theme: "system",
   accentColor: "monochrome",
 };
 
 export function App() {
-  // Accounts vault
-  const [accounts, setAccounts] = useState<OtpAccount[]>(() => {
-    const saved = localStorage.getItem("authg_accounts") || localStorage.getItem("authdesk_accounts");
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        return [];
-      }
-    }
-    return [];
-  });
+  // Accounts vault (kept strictly in memory when unlocked - zero plaintext in web storage)
+  const [accounts, setAccounts] = useState<OtpAccount[]>([]);
+  const [hasVaultOnDisk, setHasVaultOnDisk] = useState<boolean | null>(null);
 
   // Settings
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -98,6 +94,9 @@ export function App() {
         const parsed = JSON.parse(saved);
         if (parsed.closeOnBlur === undefined) {
           parsed.closeOnBlur = true;
+        }
+        if (parsed.autoLockMinutes === undefined) {
+          parsed.autoLockMinutes = 15;
         }
         return { ...DEFAULT_SETTINGS, ...parsed };
       } catch {
@@ -112,12 +111,11 @@ export function App() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Modals
-  const [isLocked, setIsLocked] = useState(false);
+  // Modals & Security States
+  const [isLocked, setIsLocked] = useState(true);
+  const [isDecrypting, setIsDecrypting] = useState(false);
   const [pinInput, setPinInput] = useState("");
-  const [vaultPin, setVaultPin] = useState<string>(() => {
-    return localStorage.getItem("authg_pin") || "";
-  });
+  const [vaultPin, setVaultPin] = useState<string>("");
   const [currentView, setCurrentView] = useState<"vault" | "settings" | "help">("vault");
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [selectedAccount, setSelectedAccount] = useState<OtpAccount | null>(null);
@@ -150,6 +148,15 @@ export function App() {
   // Global 30s Countdown
   const [secondsRemaining, setSecondsRemaining] = useState(30);
 
+  // In-App Update State
+  const [updateStatus, setUpdateStatus] = useState<{
+    state: "idle" | "checking" | "up-to-date" | "available" | "installing" | "error";
+    version?: string;
+    body?: string;
+    date?: string;
+    error?: string;
+  }>({ state: "idle" });
+
   // Apply Theme & Accent Color to root document
   useEffect(() => {
     const root = document.documentElement;
@@ -175,22 +182,61 @@ export function App() {
     return () => media.removeEventListener("change", applyTheme);
   }, [settings.theme, settings.accentColor]);
 
-  // Sync with native disk vault on boot
+  // Sync with native disk vault on boot and safely migrate/purge any legacy plaintext storage
   useEffect(() => {
-    tauriInvoke<boolean>("check_vault_exists")
-      .then((exists) => {
-        if (exists) {
-          tauriInvoke<OtpAccount[]>("load_accounts_vault", { pin: vaultPin || "0000" })
-            .then((loaded) => {
-              if (loaded && loaded.length > 0) {
-                setAccounts((curr) => (curr.length === 0 ? loaded : curr));
-              }
-            })
-            .catch(() => {});
+    async function initVault() {
+      const legacyAccountsStr = localStorage.getItem("authg_accounts") || localStorage.getItem("authdesk_accounts");
+      const legacyPinStr = localStorage.getItem("authg_pin") || "";
+
+      let diskExists = false;
+      try {
+        diskExists = await tauriInvoke<boolean>("check_vault_exists");
+      } catch {}
+      setHasVaultOnDisk(diskExists);
+
+      if (!diskExists) {
+        // No vault exists on disk yet
+        if (legacyAccountsStr) {
+          try {
+            const parsed = JSON.parse(legacyAccountsStr);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              const pin = legacyPinStr || "";
+              await tauriInvoke("save_accounts_vault", { pin, accounts: parsed });
+              setAccounts(parsed);
+              setVaultPin(pin);
+              setIsLocked(false);
+              setHasVaultOnDisk(true);
+            } else {
+              setIsLocked(false);
+            }
+          } catch {
+            setIsLocked(false);
+          }
+        } else {
+          // Fresh install with no accounts yet
+          setIsLocked(false);
         }
-      })
-      .catch(() => {});
-  }, [vaultPin]);
+      } else {
+        // Vault exists on disk. Attempt passwordless unlock if user configured no PIN
+        try {
+          const autoLoaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault", { pin: "" });
+          setAccounts(autoLoaded);
+          setVaultPin("");
+          setIsLocked(false);
+        } catch {
+          // Vault is protected with a PIN -> require unlock
+          setIsLocked(true);
+        }
+      }
+
+      // Security: Purge unencrypted accounts and PIN from localStorage permanently
+      localStorage.removeItem("authg_accounts");
+      localStorage.removeItem("authdesk_accounts");
+      localStorage.removeItem("authg_pin");
+    }
+
+    initVault();
+  }, []);
 
   // Save settings
   useEffect(() => {
@@ -201,11 +247,15 @@ export function App() {
     tauriInvoke("set_open_at_login", { enable: settings.openAtLogin }).catch(() => {});
   }, [settings]);
 
-  // Save accounts
+  // Persist accounts to encrypted vault on change (only when unlocked - zero web storage)
   useEffect(() => {
-    localStorage.setItem("authg_accounts", JSON.stringify(accounts));
-    tauriInvoke("save_accounts_vault", { pin: vaultPin, accounts }).catch(() => {});
-  }, [accounts, vaultPin]);
+    if (isLocked) return;
+    if (accounts.length > 0 || hasVaultOnDisk) {
+      tauriInvoke("save_accounts_vault", { pin: vaultPin, accounts })
+        .then(() => setHasVaultOnDisk(true))
+        .catch(() => {});
+    }
+  }, [accounts, vaultPin, isLocked, hasVaultOnDisk]);
 
   // Global hotkey / paste listener (⌘V) to automatically import QR images
   useEffect(() => {
@@ -378,8 +428,20 @@ export function App() {
     let isActive = true;
 
     if (isCameraActive) {
+      tauriInvoke("set_prevent_close_on_blur", { prevent: true }).catch(() => {});
+
       const startCamera = async () => {
         try {
+          // Check native macOS permission status first
+          try {
+            const permStatus = await tauriInvoke<string>("check_camera_permission");
+            if (permStatus === "denied") {
+              showToast("Camera permission denied. Enable Camera in macOS System Settings > Privacy & Security.");
+              setIsCameraActive(false);
+              return;
+            }
+          } catch {}
+
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             showToast("Camera API not supported in this environment");
             setIsCameraActive(false);
@@ -388,16 +450,13 @@ export function App() {
 
           let stream: MediaStream;
           try {
-            // First attempt with ideal constraints (supports external or phone cameras)
             stream = await navigator.mediaDevices.getUserMedia({
               video: {
-                facingMode: { ideal: "environment" },
                 width: { ideal: 1280 },
                 height: { ideal: 720 },
               },
             });
           } catch {
-            // Fallback for Mac built-in FaceTime HD webcam (avoids OverconstrainedError)
             stream = await navigator.mediaDevices.getUserMedia({ video: true });
           }
 
@@ -430,7 +489,7 @@ export function App() {
         } catch (err: any) {
           console.error("Camera access error:", err);
           if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
-            showToast("Camera permission denied. Enable Camera in macOS System Settings > Privacy.");
+            showToast("Camera access denied. Enable Camera in macOS System Settings > Privacy & Security > Camera.");
           } else if (err?.name === "NotFoundError" || err?.name === "DevicesNotFoundError") {
             showToast("No camera detected on this machine.");
           } else {
@@ -456,6 +515,7 @@ export function App() {
       streamRef.current = null;
     }
     setIsCameraActive(false);
+    tauriInvoke("set_prevent_close_on_blur", { prevent: false }).catch(() => {});
   }
 
   function showToast(msg: string) {
@@ -468,23 +528,27 @@ export function App() {
     if (raw === "------") return;
 
     try {
-      await navigator.clipboard.writeText(raw);
-      setCopiedId(id);
       const clearTime = settings.clipboardTimeoutSec;
+      try {
+        // Native concealed pasteboard marker (hides from Raycast, Alfred, Maccy, Windows History)
+        await tauriInvoke("copy_concealed_totp", { code: raw, timeoutSecs: clearTime });
+      } catch {
+        await navigator.clipboard.writeText(raw);
+        if (clearTime > 0) {
+          setTimeout(async () => {
+            try {
+              const current = await navigator.clipboard.readText();
+              if (current === raw) {
+                await navigator.clipboard.writeText("");
+              }
+            } catch {}
+          }, clearTime * 1000);
+        }
+      }
+
+      setCopiedId(id);
       showToast(clearTime > 0 ? `Copied ${raw} (clears in ${clearTime}s)` : `Copied ${raw}`);
       setTimeout(() => setCopiedId(null), 1500);
-
-      // Auto-clear clipboard
-      if (clearTime > 0) {
-        setTimeout(async () => {
-          try {
-            const current = await navigator.clipboard.readText();
-            if (current === raw) {
-              await navigator.clipboard.writeText("");
-            }
-          } catch {}
-        }, clearTime * 1000);
-      }
     } catch {
       showToast("Failed to copy code");
     }
@@ -606,35 +670,77 @@ export function App() {
     setSelectedAccount(null);
   }
 
-  function handleUnlock() {
-    if (!vaultPin || pinInput === vaultPin) {
+  async function handleUnlock() {
+    if (!pinInput) {
+      showToast("Please enter master passcode");
+      return;
+    }
+    setIsDecrypting(true);
+    try {
+      const loaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault", { pin: pinInput });
+      setAccounts(loaded);
+      setVaultPin(pinInput);
       setIsLocked(false);
       setPinInput("");
-    } else {
-      showToast("Incorrect passcode");
+      setHasVaultOnDisk(true);
+      showToast("Vault unlocked");
+    } catch {
+      showToast("Incorrect passcode. Could not decrypt vault.");
+    } finally {
+      setIsDecrypting(false);
     }
   }
 
-  function handleChangePin() {
-    if (vaultPin && oldPinInput !== vaultPin) {
-      showToast("Current passcode is incorrect");
-      return;
+  function handleLock() {
+    setIsLocked(true);
+    setAccounts([]);
+    setCodes({});
+    setVaultPin("");
+    setPinInput("");
+    showToast("Vault locked");
+  }
+
+  async function handleChangePin() {
+    if (hasVaultOnDisk && vaultPin && oldPinInput !== vaultPin) {
+      try {
+        await tauriInvoke("load_accounts_vault", { pin: oldPinInput });
+      } catch {
+        showToast("Current passcode is incorrect");
+        return;
+      }
     }
     if (newPinInput.length < 4) {
       showToast("New passcode must be at least 4 digits");
       return;
     }
-    localStorage.setItem("authg_pin", newPinInput);
-    setVaultPin(newPinInput);
-    setOldPinInput("");
-    setNewPinInput("");
-    showToast("Master passcode updated");
+    try {
+      await tauriInvoke("save_accounts_vault", { pin: newPinInput, accounts });
+      setVaultPin(newPinInput);
+      setHasVaultOnDisk(true);
+      setOldPinInput("");
+      setNewPinInput("");
+      showToast("Master passcode updated & vault re-encrypted");
+    } catch {
+      showToast("Failed to update passcode");
+    }
   }
 
   function handleExportBackup() {
+    if (accounts.length === 0) {
+      showToast("No accounts to export");
+      return;
+    }
+
+    const confirmed = confirm(
+      "SECURITY WARNING:\n\nThis will export your 2FA secret seeds into an UNENCRYPTED plaintext JSON file in your Downloads folder.\n\nAnyone with access to that file will have full access to your 2FA codes.\n\nDo you wish to proceed?"
+    );
+
+    if (!confirmed) return;
+
     const dataStr = JSON.stringify({
-      version: "1.0",
+      version: "2.0",
       app: "AuthG",
+      securityNotice: "CONFIDENTIAL: Contains unencrypted two-factor authentication secret keys.",
       exportedAt: new Date().toISOString(),
       accounts,
     }, null, 2);
@@ -646,7 +752,7 @@ export function App() {
     a.download = `authg_backup_${new Date().toISOString().split("T")[0]}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast("Backup exported successfully");
+    showToast("Unencrypted backup exported");
   }
 
   function handleImportBackupFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -679,13 +785,85 @@ export function App() {
   async function handleWipeVault() {
     if (confirm("DANGER: Wipe all accounts and delete local vault? This cannot be undone.")) {
       setAccounts([]);
+      setCodes({});
+      setVaultPin("");
+      setHasVaultOnDisk(false);
       localStorage.removeItem("authg_accounts");
       localStorage.removeItem("authdesk_accounts");
+      localStorage.removeItem("authg_pin");
       await tauriInvoke("wipe_vault").catch(() => {});
       showToast("Vault wiped clean");
       setCurrentView("vault");
     }
   }
+
+  async function handleCheckUpdate() {
+    setUpdateStatus({ state: "checking" });
+    try {
+      const result = await tauriInvoke<{
+        should_update: boolean;
+        current_version: string;
+        version?: string;
+        body?: string;
+        date?: string;
+      }>("check_app_update");
+
+      if (result.should_update && result.version) {
+        setUpdateStatus({
+          state: "available",
+          version: result.version,
+          body: result.body,
+          date: result.date,
+        });
+        showToast(`Update v${result.version} available!`);
+      } else {
+        setUpdateStatus({ state: "up-to-date" });
+        showToast(`AuthG is up to date (v${result.current_version})`);
+      }
+    } catch (err: any) {
+      const errMsg = typeof err === "string" ? err : err?.message || "Failed to check for updates";
+      setUpdateStatus({ state: "error", error: errMsg });
+      showToast("Update check failed");
+    }
+  }
+
+  async function handleInstallUpdate() {
+    setUpdateStatus((prev) => ({ ...prev, state: "installing" }));
+    showToast("Downloading and applying update...");
+    try {
+      await tauriInvoke("install_app_update");
+    } catch (err: any) {
+      const errMsg = typeof err === "string" ? err : err?.message || "Installation failed";
+      setUpdateStatus({ state: "error", error: errMsg });
+      showToast(errMsg);
+    }
+  }
+
+  // Auto-lock on user inactivity
+  useEffect(() => {
+    if (isLocked || !settings.autoLockMinutes || settings.autoLockMinutes <= 0) return;
+
+    let timeoutId: ReturnType<typeof setTimeout>;
+
+    const resetTimer = () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        handleLock();
+      }, settings.autoLockMinutes * 60 * 1000);
+    };
+
+    resetTimer();
+
+    const events = ["mousedown", "keydown", "touchstart", "scroll"];
+    const handleActivity = () => resetTimer();
+
+    events.forEach((ev) => window.addEventListener(ev, handleActivity, { passive: true }));
+
+    return () => {
+      clearTimeout(timeoutId);
+      events.forEach((ev) => window.removeEventListener(ev, handleActivity));
+    };
+  }, [isLocked, settings.autoLockMinutes, vaultPin]);
 
   const filtered = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
@@ -717,7 +895,7 @@ export function App() {
               Vault Locked
             </h3>
             <p style={{ fontSize: 11, color: "var(--muted)", marginBottom: 16 }}>
-              Enter master passcode to view your 2FA codes
+              Enter master passcode to decrypt and view your 2FA codes
             </p>
             <input
               id="pin-unlock-input"
@@ -728,11 +906,18 @@ export function App() {
               style={{ textAlign: "center", fontSize: 16, letterSpacing: 4, marginBottom: 12 }}
               placeholder="••••"
               value={pinInput}
+              disabled={isDecrypting}
               onChange={(e) => setPinInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleUnlock()}
+              onKeyDown={(e) => e.key === "Enter" && !isDecrypting && handleUnlock()}
             />
-            <button id="unlock-submit-btn" className="wm-btn-primary" onClick={handleUnlock} style={{ width: "100%" }}>
-              Unlock
+            <button
+              id="unlock-submit-btn"
+              className="wm-btn-primary"
+              onClick={handleUnlock}
+              disabled={isDecrypting}
+              style={{ width: "100%" }}
+            >
+              {isDecrypting ? "Decrypting..." : "Unlock"}
             </button>
           </div>
         </div>
@@ -927,6 +1112,22 @@ export function App() {
                   </select>
                 </div>
 
+                <div className="wm-field" style={{ marginTop: 6 }}>
+                  <label className="wm-label">Auto-Lock Inactivity Timeout</label>
+                  <select
+                    id="select-autolock-timeout"
+                    className="wm-input"
+                    value={settings.autoLockMinutes}
+                    onChange={(e) => setSettings((s) => ({ ...s, autoLockMinutes: Number(e.target.value) }))}
+                  >
+                    <option value={5}>5 minutes</option>
+                    <option value={15}>15 minutes (recommended)</option>
+                    <option value={30}>30 minutes</option>
+                    <option value={60}>1 hour</option>
+                    <option value={0}>Never auto-lock</option>
+                  </select>
+                </div>
+
                 {/* Change PIN section */}
                 <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: 10, marginTop: 6, display: "flex", flexDirection: "column", gap: 8 }}>
                   <div>
@@ -1016,9 +1217,9 @@ export function App() {
               </div>
             </section>
 
-            {/* Section 5: About & Support */}
+            {/* Section 5: Application & Updates */}
             <section>
-              <div className="wm-section-title">About & Support</div>
+              <div className="wm-section-title">Application & Updates</div>
               <div className="wm-section-card">
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingBottom: 10, borderBottom: "1px solid var(--border)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1026,8 +1227,76 @@ export function App() {
                       <ShieldCheck size={13} />
                     </div>
                     <div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>AuthG v1.0.0</div>
-                      <div style={{ fontSize: 10, color: "var(--muted)" }}>by Abhinav Dhakal</div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>AuthG v1.0.2</div>
+                      <div style={{ fontSize: 10, color: "var(--muted)" }}>Native Desktop Authenticator</div>
+                    </div>
+                  </div>
+                  <button
+                    id="check-update-btn"
+                    type="button"
+                    disabled={updateStatus.state === "checking" || updateStatus.state === "installing"}
+                    className="wm-btn-secondary"
+                    style={{ fontSize: 11, padding: "5px 10px", gap: 5 }}
+                    onClick={handleCheckUpdate}
+                  >
+                    <RefreshCw size={12} className={updateStatus.state === "checking" ? "spin" : ""} />
+                    {updateStatus.state === "checking" ? "Checking..." : "Check for Updates"}
+                  </button>
+                </div>
+
+                {/* Update status message / prompt */}
+                {updateStatus.state === "up-to-date" && (
+                  <div style={{ padding: "8px 10px", marginTop: 4, borderRadius: 6, background: "rgba(16, 185, 129, 0.08)", border: "1px solid rgba(16, 185, 129, 0.2)", display: "flex", alignItems: "center", gap: 6 }}>
+                    <Check size={13} style={{ color: "#10b981", flexShrink: 0 }} />
+                    <span style={{ fontSize: 11, color: "var(--foreground)", fontWeight: 500 }}>You're on the latest version of AuthG.</span>
+                  </div>
+                )}
+
+                {updateStatus.state === "error" && (
+                  <div style={{ padding: "8px 10px", marginTop: 4, borderRadius: 6, background: "rgba(239, 68, 68, 0.08)", border: "1px solid rgba(239, 68, 68, 0.2)", display: "flex", alignItems: "center", gap: 6 }}>
+                    <AlertTriangle size={13} style={{ color: "#ef4444", flexShrink: 0 }} />
+                    <span style={{ fontSize: 11, color: "var(--foreground)" }}>{updateStatus.error || "Could not reach update server."}</span>
+                  </div>
+                )}
+
+                {updateStatus.state === "available" && (
+                  <div style={{ padding: "10px", marginTop: 4, borderRadius: 6, background: "rgba(59, 130, 246, 0.08)", border: "1px solid rgba(59, 130, 246, 0.25)", display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <Sparkles size={13} style={{ color: "#3b82f6" }} />
+                        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--foreground)" }}>AuthG v{updateStatus.version} Available</span>
+                      </div>
+                      <span style={{ fontSize: 10, color: "var(--muted)" }}>Signed Release</span>
+                    </div>
+                    {updateStatus.body && (
+                      <div style={{ fontSize: 10, color: "var(--muted)", maxHeight: 70, overflowY: "auto", whiteSpace: "pre-line", lineHeight: 1.3 }}>
+                        {updateStatus.body}
+                      </div>
+                    )}
+                    <button
+                      id="install-update-btn"
+                      type="button"
+                      className="wm-btn-primary"
+                      style={{ fontSize: 11, padding: "6px 12px", justifyContent: "center", width: "100%", gap: 6 }}
+                      onClick={handleInstallUpdate}
+                    >
+                      <Download size={12} /> Install & Relaunch
+                    </button>
+                  </div>
+                )}
+
+                {updateStatus.state === "installing" && (
+                  <div style={{ padding: "10px", marginTop: 4, borderRadius: 6, background: "rgba(59, 130, 246, 0.08)", border: "1px solid rgba(59, 130, 246, 0.25)", display: "flex", alignItems: "center", gap: 8, justifyContent: "center" }}>
+                    <RefreshCw size={13} className="spin" style={{ color: "#3b82f6" }} />
+                    <span style={{ fontSize: 11, fontWeight: 500, color: "var(--foreground)" }}>Downloading update & restarting...</span>
+                  </div>
+                )}
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 10, borderTop: "1px solid var(--border)", marginTop: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 500, color: "var(--foreground)" }}>Official Website</div>
+                      <div style={{ fontSize: 10, color: "var(--muted)" }}>authg.abhinavdhakal.com</div>
                     </div>
                   </div>
                   <button
@@ -1272,15 +1541,13 @@ export function App() {
               <button
                 id="toggle-lock-btn"
                 className={`wm-btn-icon ${isLocked ? "active" : ""}`}
-                title={isLocked ? "Unlock Vault" : "Lock Vault"}
+                title={isLocked ? "Vault is Locked" : "Lock Vault"}
                 onClick={() => {
                   if (isLocked) {
-                    setIsLocked(false);
-                  } else if (!vaultPin) {
-                    showToast("Set a master passcode in Settings to lock");
-                    setCurrentView("settings");
+                    const el = document.getElementById("pin-unlock-input");
+                    if (el) el.focus();
                   } else {
-                    setIsLocked(true);
+                    handleLock();
                   }
                 }}
               >

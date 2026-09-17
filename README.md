@@ -121,8 +121,8 @@ Random 96-bit IV     ───────────────────�
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/authg.git
-cd authg/app
+git clone https://github.com/abhidhakal/authg-app.git
+cd authg-app
 
 # Install frontend dependencies
 npm install
