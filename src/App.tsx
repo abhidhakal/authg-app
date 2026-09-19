@@ -101,6 +101,7 @@ export function App() {
 
   const [codes, setCodes] = useState<Record<string, CodeInfo>>({});
   const [searchQuery, setSearchQuery] = useState("");
+  const [focusedIndex, setFocusedIndex] = useState<number>(-1);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -799,6 +800,49 @@ export function App() {
     );
   }, [accounts, searchQuery]);
 
+  // Reset keyboard card focus when search query changes
+  useEffect(() => {
+    setFocusedIndex(-1);
+  }, [searchQuery]);
+
+  // Arrow key navigation (↑ / ↓) across accounts and Enter on focused card to copy
+  useEffect(() => {
+    function handleListNavKeys(e: KeyboardEvent) {
+      if (currentView !== "vault" || isImportModalOpen || selectedAccount || legacyVaultModal || filtered.length === 0) {
+        return;
+      }
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setFocusedIndex((prev) => {
+          const next = prev < filtered.length - 1 ? prev + 1 : 0;
+          const el = document.getElementById(`account-card-${filtered[next].id}`);
+          el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          return next;
+        });
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setFocusedIndex((prev) => {
+          const next = prev > 0 ? prev - 1 : filtered.length - 1;
+          const el = document.getElementById(`account-card-${filtered[next].id}`);
+          el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          return next;
+        });
+      } else if (e.key === "Enter") {
+        if (focusedIndex >= 0 && focusedIndex < filtered.length) {
+          e.preventDefault();
+          const target = filtered[focusedIndex];
+          const info = codes[target.id];
+          const raw = info?.code || "";
+          if (raw) copyCode(raw, target.id);
+        }
+      }
+    }
+
+    window.addEventListener("keydown", handleListNavKeys);
+    return () => window.removeEventListener("keydown", handleListNavKeys);
+  }, [currentView, isImportModalOpen, selectedAccount, legacyVaultModal, filtered, focusedIndex, codes]);
+
   const tickerClass =
     secondsRemaining <= 5
       ? "urgent"
@@ -1125,7 +1169,7 @@ export function App() {
                       <ShieldCheck size={13} />
                     </div>
                     <div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>AuthG v1.0.2</div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>AuthG v1.0.3</div>
                       <div style={{ fontSize: 10, color: "var(--muted)" }}>Native Desktop Authenticator</div>
                     </div>
                   </div>
@@ -1519,26 +1563,56 @@ export function App() {
                   </p>
                 </div>
                 {!searchQuery && (
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button
-                      id="empty-import-action-btn"
-                      className="wm-btn-primary"
-                      onClick={() => setIsImportModalOpen(true)}
-                    >
-                      <Plus size={13} /> Import Accounts
-                    </button>
-                    <button
-                      id="empty-help-btn"
-                      className="wm-btn-secondary"
-                      onClick={() => setCurrentView("help")}
-                    >
-                      <HelpCircle size={13} /> How it Works
-                    </button>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 280, marginTop: 4 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <button
+                        id="empty-paste-btn"
+                        className="wm-btn-primary"
+                        style={{ justifyContent: "center", fontSize: 11, padding: "8px 10px" }}
+                        onClick={() => {
+                          showToast("Press ⌘V anywhere to paste QR code from clipboard");
+                        }}
+                      >
+                        <Upload size={13} /> Paste ⌘V
+                      </button>
+                      <button
+                        id="empty-file-btn"
+                        className="wm-btn-secondary"
+                        style={{ justifyContent: "center", fontSize: 11, padding: "8px 10px" }}
+                        onClick={() => {
+                          setActiveImportTab("qr");
+                          setIsImportModalOpen(true);
+                        }}
+                      >
+                        <QrCode size={13} /> Upload QR
+                      </button>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        id="empty-manual-btn"
+                        className="wm-btn-secondary"
+                        style={{ flex: 1, justifyContent: "center", fontSize: 11, padding: "6px 8px" }}
+                        onClick={() => {
+                          setActiveImportTab("manual");
+                          setIsImportModalOpen(true);
+                        }}
+                      >
+                        <Plus size={12} /> Add Manually
+                      </button>
+                      <button
+                        id="empty-help-btn"
+                        className="wm-btn-secondary"
+                        style={{ flex: 1, justifyContent: "center", fontSize: 11, padding: "6px 8px" }}
+                        onClick={() => setCurrentView("help")}
+                      >
+                        <HelpCircle size={12} /> How it Works
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
             ) : (
-              filtered.map((acc) => {
+              filtered.map((acc, index) => {
                 const info = codes[acc.id];
                 const raw = info?.code || "------";
                 const formatted =
@@ -1549,12 +1623,13 @@ export function App() {
                     : raw;
 
                 const isCopied = copiedId === acc.id;
+                const isFocused = focusedIndex === index;
 
                 return (
                   <div
                     key={acc.id}
                     id={`account-card-${acc.id}`}
-                    className={`wm-card ${isCopied ? "copied" : ""}`}
+                    className={`wm-card ${isCopied ? "copied" : ""} ${isFocused ? "focused" : ""}`}
                     onClick={() => copyCode(raw, acc.id)}
                     onDoubleClick={(e) => {
                       e.stopPropagation();

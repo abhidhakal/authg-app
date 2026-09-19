@@ -1,6 +1,6 @@
 [package]
 name = "authg"
-version = "1.0.2"
+version = "1.0.3"
 description = "AuthG - Minimal Native Desktop Authenticator for Google Authenticator"
 authors = ["Abhinav Dhakal"]
 edition = "2021"
