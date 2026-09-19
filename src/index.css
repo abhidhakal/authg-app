@@ -315,9 +315,11 @@ body {
   cursor: pointer;
 }
 
-.wm-card:hover {
+.wm-card:hover,
+.wm-card.focused {
   background: var(--card-hover);
-  border-color: var(--border);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
 }
 
 .wm-card.copied {
