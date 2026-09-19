@@ -3,8 +3,6 @@ import {
   ShieldCheck,
   Search,
   Plus,
-  Lock,
-  Unlock,
   Check,
   Trash2,
   QrCode,
@@ -64,7 +62,6 @@ interface AppSettings {
   openAtLogin: boolean;
   privacyMode: boolean;
   clipboardTimeoutSec: number;
-  autoLockMinutes: number;
   theme: "dark" | "light" | "system";
   accentColor: "monochrome" | "titanium" | "slate" | "graphite" | "onyx";
 }
@@ -76,13 +73,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   openAtLogin: true,
   privacyMode: false,
   clipboardTimeoutSec: 30,
-  autoLockMinutes: 15,
   theme: "system",
   accentColor: "monochrome",
 };
 
 export function App() {
-  // Accounts vault (kept strictly in memory when unlocked - zero plaintext in web storage)
+  // Accounts vault (kept strictly in memory when app is running - zero plaintext in web storage)
   const [accounts, setAccounts] = useState<OtpAccount[]>([]);
   const [hasVaultOnDisk, setHasVaultOnDisk] = useState<boolean | null>(null);
 
@@ -94,9 +90,6 @@ export function App() {
         const parsed = JSON.parse(saved);
         if (parsed.closeOnBlur === undefined) {
           parsed.closeOnBlur = true;
-        }
-        if (parsed.autoLockMinutes === undefined) {
-          parsed.autoLockMinutes = 15;
         }
         return { ...DEFAULT_SETTINGS, ...parsed };
       } catch {
@@ -111,15 +104,16 @@ export function App() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Modals & Security States
-  const [isLocked, setIsLocked] = useState(true);
-  const [isDecrypting, setIsDecrypting] = useState(false);
-  const [pinInput, setPinInput] = useState("");
-  const [vaultPin, setVaultPin] = useState<string>("");
+  // Views & Modals
   const [currentView, setCurrentView] = useState<"vault" | "settings" | "help">("vault");
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [selectedAccount, setSelectedAccount] = useState<OtpAccount | null>(null);
   const [mirrorGoogleMode, setMirrorGoogleMode] = useState(false);
+
+  // Optional migration modal for users who had an old password-protected vault
+  const [legacyVaultModal, setLegacyVaultModal] = useState(false);
+  const [legacyPasscodeInput, setLegacyPasscodeInput] = useState("");
+  const [isMigratingLegacy, setIsMigratingLegacy] = useState(false);
 
   // Modal active tabs
   const [activeImportTab, setActiveImportTab] = useState<"qr" | "manual">("qr");
@@ -134,10 +128,6 @@ export function App() {
 
   // Migration URI input
   const [migrationUriText, setMigrationUriText] = useState("");
-
-  // Change PIN form
-  const [oldPinInput, setOldPinInput] = useState("");
-  const [newPinInput, setNewPinInput] = useState("");
 
   // Camera Scanning
   const [isCameraActive, setIsCameraActive] = useState(false);
@@ -186,7 +176,6 @@ export function App() {
   useEffect(() => {
     async function initVault() {
       const legacyAccountsStr = localStorage.getItem("authg_accounts") || localStorage.getItem("authdesk_accounts");
-      const legacyPinStr = localStorage.getItem("authg_pin") || "";
 
       let diskExists = false;
       try {
@@ -195,41 +184,29 @@ export function App() {
       setHasVaultOnDisk(diskExists);
 
       if (!diskExists) {
-        // No vault exists on disk yet
+        // Fresh install or migrating from legacy plaintext storage
         if (legacyAccountsStr) {
           try {
             const parsed = JSON.parse(legacyAccountsStr);
             if (Array.isArray(parsed) && parsed.length > 0) {
-              const pin = legacyPinStr || "";
-              await tauriInvoke("save_accounts_vault", { pin, accounts: parsed });
+              await tauriInvoke("save_accounts_vault", { pin: "", accounts: parsed });
               setAccounts(parsed);
-              setVaultPin(pin);
-              setIsLocked(false);
               setHasVaultOnDisk(true);
-            } else {
-              setIsLocked(false);
             }
-          } catch {
-            setIsLocked(false);
-          }
-        } else {
-          // Fresh install with no accounts yet
-          setIsLocked(false);
+          } catch {}
         }
       } else {
-        // Vault exists on disk. Attempt passwordless unlock if user configured no PIN
+        // Vault exists on disk. Load instantly without passcode
         try {
           const autoLoaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault", { pin: "" });
           setAccounts(autoLoaded);
-          setVaultPin("");
-          setIsLocked(false);
         } catch {
-          // Vault is protected with a PIN -> require unlock
-          setIsLocked(true);
+          // Vault exists but was encrypted with an old passcode in a previous version
+          setLegacyVaultModal(true);
         }
       }
 
-      // Security: Purge unencrypted accounts and PIN from localStorage permanently
+      // Security: Purge unencrypted accounts and old pin keys from localStorage permanently
       localStorage.removeItem("authg_accounts");
       localStorage.removeItem("authdesk_accounts");
       localStorage.removeItem("authg_pin");
@@ -247,15 +224,14 @@ export function App() {
     tauriInvoke("set_open_at_login", { enable: settings.openAtLogin }).catch(() => {});
   }, [settings]);
 
-  // Persist accounts to encrypted vault on change (only when unlocked - zero web storage)
+  // Persist accounts to encrypted vault on change (zero web storage, instant AES-256 persistence)
   useEffect(() => {
-    if (isLocked) return;
     if (accounts.length > 0 || hasVaultOnDisk) {
-      tauriInvoke("save_accounts_vault", { pin: vaultPin, accounts })
+      tauriInvoke("save_accounts_vault", { pin: "", accounts })
         .then(() => setHasVaultOnDisk(true))
         .catch(() => {});
     }
-  }, [accounts, vaultPin, isLocked, hasVaultOnDisk]);
+  }, [accounts, hasVaultOnDisk]);
 
   // Global hotkey / paste listener (⌘V) to automatically import QR images
   useEffect(() => {
@@ -670,92 +646,33 @@ export function App() {
     setSelectedAccount(null);
   }
 
-  async function handleUnlock() {
-    setIsDecrypting(true);
-    const pinToTry = pinInput.trim();
+  async function handleMigrateLegacyVault() {
+    if (!legacyPasscodeInput.trim()) return;
+    setIsMigratingLegacy(true);
     try {
-      // First attempt to decrypt with the entered passcode (or empty string if left blank)
-      const loaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault", { pin: pinToTry });
+      const loaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault", { pin: legacyPasscodeInput.trim() });
       setAccounts(loaded);
-      setVaultPin(pinToTry);
-      setIsLocked(false);
-      setPinInput("");
+      await tauriInvoke("save_accounts_vault", { pin: "", accounts: loaded });
+      setLegacyVaultModal(false);
+      setLegacyPasscodeInput("");
       setHasVaultOnDisk(true);
-      showToast("Vault unlocked");
-      return;
+      showToast("Vault upgraded to instant access");
     } catch {
-      // If user typed something but it failed, check if vault was actually passwordless
-      if (pinToTry !== "") {
-        try {
-          const loaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault", { pin: "" });
-          setAccounts(loaded);
-          setVaultPin("");
-          setIsLocked(false);
-          setPinInput("");
-          setHasVaultOnDisk(true);
-          showToast("Vault unlocked (no passcode set)");
-          return;
-        } catch {}
-      }
-      showToast(pinToTry ? "Incorrect passcode. Could not decrypt vault." : "Please enter master passcode");
+      showToast("Incorrect passcode. Could not decrypt vault.");
     } finally {
-      setIsDecrypting(false);
+      setIsMigratingLegacy(false);
     }
   }
 
-  function handleLock() {
-    if (!vaultPin) {
-      showToast("Set a master passcode in Settings to lock your vault");
-      setCurrentView("settings");
-      return;
-    }
-    setIsLocked(true);
-    setAccounts([]);
-    setCodes({});
-    setVaultPin("");
-    setPinInput("");
-    showToast("Vault locked");
-  }
-
-  async function handleResetLockedVault() {
-    if (
-      window.confirm(
-        "Reset local vault?\n\nIf you forgot your passcode or got locked out, this will permanently wipe the local encrypted vault so you can start fresh.\n\nAll accounts in the vault will be removed."
-      )
-    ) {
+  async function handleResetLegacyVault() {
+    if (confirm("Reset local vault? All previous accounts will be deleted so you can start fresh.")) {
       await tauriInvoke("wipe_vault").catch(() => {});
       setAccounts([]);
       setCodes({});
-      setVaultPin("");
+      setLegacyVaultModal(false);
+      setLegacyPasscodeInput("");
       setHasVaultOnDisk(false);
-      setIsLocked(false);
-      setPinInput("");
       showToast("Vault reset successfully");
-    }
-  }
-
-  async function handleChangePin() {
-    if (hasVaultOnDisk && vaultPin && oldPinInput !== vaultPin) {
-      try {
-        await tauriInvoke("load_accounts_vault", { pin: oldPinInput });
-      } catch {
-        showToast("Current passcode is incorrect");
-        return;
-      }
-    }
-    if (newPinInput.length < 4) {
-      showToast("New passcode must be at least 4 digits");
-      return;
-    }
-    try {
-      await tauriInvoke("save_accounts_vault", { pin: newPinInput, accounts });
-      setVaultPin(newPinInput);
-      setHasVaultOnDisk(true);
-      setOldPinInput("");
-      setNewPinInput("");
-      showToast("Master passcode updated & vault re-encrypted");
-    } catch {
-      showToast("Failed to update passcode");
     }
   }
 
@@ -820,7 +737,6 @@ export function App() {
     if (confirm("DANGER: Wipe all accounts and delete local vault? This cannot be undone.")) {
       setAccounts([]);
       setCodes({});
-      setVaultPin("");
       setHasVaultOnDisk(false);
       localStorage.removeItem("authg_accounts");
       localStorage.removeItem("authdesk_accounts");
@@ -873,32 +789,6 @@ export function App() {
     }
   }
 
-  // Auto-lock on user inactivity (only active when vault is protected with a PIN)
-  useEffect(() => {
-    if (isLocked || !settings.autoLockMinutes || settings.autoLockMinutes <= 0 || !vaultPin) return;
-
-    let timeoutId: ReturnType<typeof setTimeout>;
-
-    const resetTimer = () => {
-      clearTimeout(timeoutId);
-      timeoutId = setTimeout(() => {
-        handleLock();
-      }, settings.autoLockMinutes * 60 * 1000);
-    };
-
-    resetTimer();
-
-    const events = ["mousedown", "keydown", "touchstart", "scroll"];
-    const handleActivity = () => resetTimer();
-
-    events.forEach((ev) => window.addEventListener(ev, handleActivity, { passive: true }));
-
-    return () => {
-      clearTimeout(timeoutId);
-      events.forEach((ev) => window.removeEventListener(ev, handleActivity));
-    };
-  }, [isLocked, settings.autoLockMinutes, vaultPin]);
-
   const filtered = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
     if (!q) return accounts;
@@ -918,46 +808,44 @@ export function App() {
 
   return (
     <div className="wm-window" id="authg-window">
-      {/* Vault Locked Shield */}
-      {isLocked ? (
+      {/* Legacy Vault Upgrade Modal (Only shown if a previous password-protected vault exists) */}
+      {legacyVaultModal && (
         <div className="wm-modal-overlay">
           <div className="wm-modal" style={{ textAlign: "center", padding: "24px 20px" }}>
             <div style={{ margin: "0 auto 12px auto", width: 40, height: 40, borderRadius: 8, background: "var(--card)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--foreground)" }}>
-              <Lock size={18} />
+              <ShieldCheck size={18} />
             </div>
             <h3 style={{ fontSize: 14, fontWeight: 600, color: "var(--foreground)", marginBottom: 4 }}>
-              Vault Locked
+              Upgrade Vault
             </h3>
             <p style={{ fontSize: 11, color: "var(--muted)", marginBottom: 16 }}>
-              Enter master passcode to decrypt and view your 2FA codes
+              Enter your previous passcode once to upgrade your vault to instant access
             </p>
             <input
-              id="pin-unlock-input"
+              id="legacy-passcode-input"
               type="password"
-              maxLength={8}
               autoFocus
               className="wm-input mono"
               style={{ textAlign: "center", fontSize: 16, letterSpacing: 4, marginBottom: 12 }}
               placeholder="••••"
-              value={pinInput}
-              disabled={isDecrypting}
-              onChange={(e) => setPinInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && !isDecrypting && handleUnlock()}
+              value={legacyPasscodeInput}
+              disabled={isMigratingLegacy}
+              onChange={(e) => setLegacyPasscodeInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && !isMigratingLegacy && handleMigrateLegacyVault()}
             />
             <button
-              id="unlock-submit-btn"
+              id="legacy-unlock-btn"
               className="wm-btn-primary"
-              onClick={handleUnlock}
-              disabled={isDecrypting}
+              onClick={handleMigrateLegacyVault}
+              disabled={isMigratingLegacy}
               style={{ width: "100%" }}
             >
-              {isDecrypting ? "Decrypting..." : "Unlock"}
+              {isMigratingLegacy ? "Upgrading..." : "Upgrade to Instant Access"}
             </button>
             <div style={{ marginTop: 14 }}>
               <button
                 type="button"
-                id="reset-locked-vault-btn"
-                onClick={handleResetLockedVault}
+                onClick={handleResetLegacyVault}
                 style={{
                   background: "none",
                   border: "none",
@@ -973,7 +861,8 @@ export function App() {
             </div>
           </div>
         </div>
-      ) : currentView === "settings" ? (
+      )}
+      {currentView === "settings" ? (
         <>
           {/* Settings Full Page Header */}
           <header className="wm-page-header" data-tauri-drag-region>
@@ -1164,54 +1053,11 @@ export function App() {
                   </select>
                 </div>
 
-                <div className="wm-field" style={{ marginTop: 6 }}>
-                  <label className="wm-label">Auto-Lock Inactivity Timeout</label>
-                  <select
-                    id="select-autolock-timeout"
-                    className="wm-input"
-                    value={settings.autoLockMinutes}
-                    onChange={(e) => setSettings((s) => ({ ...s, autoLockMinutes: Number(e.target.value) }))}
-                  >
-                    <option value={5}>5 minutes</option>
-                    <option value={15}>15 minutes (recommended)</option>
-                    <option value={30}>30 minutes</option>
-                    <option value={60}>1 hour</option>
-                    <option value={0}>Never auto-lock</option>
-                  </select>
-                </div>
-
-                {/* Change PIN section */}
-                <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: 10, marginTop: 6, display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>Master Passcode</span>
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                      <label style={{ fontSize: 11, fontWeight: 500, color: "var(--muted-foreground)" }}>Current Passcode</label>
-                      <input
-                        type="password"
-                        placeholder="Enter current PIN"
-                        className="wm-input mono"
-                        style={{ width: "100%" }}
-                        value={oldPinInput}
-                        onChange={(e) => setOldPinInput(e.target.value)}
-                      />
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                      <label style={{ fontSize: 11, fontWeight: 500, color: "var(--muted-foreground)" }}>New Passcode</label>
-                      <input
-                        type="password"
-                        placeholder="Enter new PIN"
-                        className="wm-input mono"
-                        style={{ width: "100%" }}
-                        value={newPinInput}
-                        onChange={(e) => setNewPinInput(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                  <button className="wm-btn-secondary" style={{ width: "100%", justifyContent: "center" }} onClick={handleChangePin}>
-                    Update Passcode
-                  </button>
+                <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: 10, marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>Vault Encryption</span>
+                  <p style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.35 }}>
+                    Your TOTP secret seeds are encrypted on disk with AES-256-GCM and strict POSIX permissions (0600), isolated strictly to your operating system account.
+                  </p>
                 </div>
               </div>
             </section>
@@ -1588,25 +1434,6 @@ export function App() {
                 onClick={() => setCurrentView("settings")}
               >
                 <SettingsIcon size={13} />
-              </button>
-
-              <button
-                id="toggle-lock-btn"
-                className={`wm-btn-icon ${isLocked ? "active" : ""}`}
-                title={isLocked ? "Vault is Locked" : vaultPin ? "Lock Vault" : "Set Passcode to Lock"}
-                onClick={() => {
-                  if (isLocked) {
-                    const el = document.getElementById("pin-unlock-input");
-                    if (el) el.focus();
-                  } else if (!vaultPin) {
-                    showToast("Set a master passcode in Settings to lock your vault");
-                    setCurrentView("settings");
-                  } else {
-                    handleLock();
-                  }
-                }}
-              >
-                {isLocked ? <Lock size={13} /> : <Unlock size={13} />}
               </button>
 
               <button
