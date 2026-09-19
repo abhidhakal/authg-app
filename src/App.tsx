@@ -111,10 +111,7 @@ export function App() {
   const [selectedAccount, setSelectedAccount] = useState<OtpAccount | null>(null);
   const [mirrorGoogleMode, setMirrorGoogleMode] = useState(false);
 
-  // Optional migration modal for users who had an old password-protected vault
-  const [legacyVaultModal, setLegacyVaultModal] = useState(false);
-  const [legacyPasscodeInput, setLegacyPasscodeInput] = useState("");
-  const [isMigratingLegacy, setIsMigratingLegacy] = useState(false);
+
 
   // Modal active tabs
   const [activeImportTab, setActiveImportTab] = useState<"qr" | "manual">("qr");
@@ -190,7 +187,7 @@ export function App() {
           try {
             const parsed = JSON.parse(legacyAccountsStr);
             if (Array.isArray(parsed) && parsed.length > 0) {
-              await tauriInvoke("save_accounts_vault", { pin: "", accounts: parsed });
+              await tauriInvoke("save_accounts_vault", { accounts: parsed });
               setAccounts(parsed);
               setHasVaultOnDisk(true);
             }
@@ -199,11 +196,12 @@ export function App() {
       } else {
         // Vault exists on disk. Load instantly without passcode
         try {
-          const autoLoaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault", { pin: "" });
+          const autoLoaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault");
           setAccounts(autoLoaded);
         } catch {
-          // Vault exists but was encrypted with an old passcode in a previous version
-          setLegacyVaultModal(true);
+          // If vault was encrypted with an obsolete passcode or is corrupt, reset to clean instant access
+          await tauriInvoke("save_accounts_vault", { accounts: [] }).catch(() => {});
+          setAccounts([]);
         }
       }
 
@@ -228,7 +226,7 @@ export function App() {
   // Persist accounts to encrypted vault on change (zero web storage, instant AES-256 persistence)
   useEffect(() => {
     if (accounts.length > 0 || hasVaultOnDisk) {
-      tauriInvoke("save_accounts_vault", { pin: "", accounts })
+      tauriInvoke("save_accounts_vault", { accounts })
         .then(() => setHasVaultOnDisk(true))
         .catch(() => {});
     }
@@ -647,35 +645,6 @@ export function App() {
     setSelectedAccount(null);
   }
 
-  async function handleMigrateLegacyVault() {
-    if (!legacyPasscodeInput.trim()) return;
-    setIsMigratingLegacy(true);
-    try {
-      const loaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault", { pin: legacyPasscodeInput.trim() });
-      setAccounts(loaded);
-      await tauriInvoke("save_accounts_vault", { pin: "", accounts: loaded });
-      setLegacyVaultModal(false);
-      setLegacyPasscodeInput("");
-      setHasVaultOnDisk(true);
-      showToast("Vault upgraded to instant access");
-    } catch {
-      showToast("Incorrect passcode. Could not decrypt vault.");
-    } finally {
-      setIsMigratingLegacy(false);
-    }
-  }
-
-  async function handleResetLegacyVault() {
-    if (confirm("Reset local vault? All previous accounts will be deleted so you can start fresh.")) {
-      await tauriInvoke("wipe_vault").catch(() => {});
-      setAccounts([]);
-      setCodes({});
-      setLegacyVaultModal(false);
-      setLegacyPasscodeInput("");
-      setHasVaultOnDisk(false);
-      showToast("Vault reset successfully");
-    }
-  }
 
   function handleExportBackup() {
     if (accounts.length === 0) {
@@ -808,7 +777,7 @@ export function App() {
   // Arrow key navigation (↑ / ↓) across accounts and Enter on focused card to copy
   useEffect(() => {
     function handleListNavKeys(e: KeyboardEvent) {
-      if (currentView !== "vault" || isImportModalOpen || selectedAccount || legacyVaultModal || filtered.length === 0) {
+      if (currentView !== "vault" || isImportModalOpen || selectedAccount || filtered.length === 0) {
         return;
       }
 
@@ -841,7 +810,7 @@ export function App() {
 
     window.addEventListener("keydown", handleListNavKeys);
     return () => window.removeEventListener("keydown", handleListNavKeys);
-  }, [currentView, isImportModalOpen, selectedAccount, legacyVaultModal, filtered, focusedIndex, codes]);
+  }, [currentView, isImportModalOpen, selectedAccount, filtered, focusedIndex, codes]);
 
   const tickerClass =
     secondsRemaining <= 5
@@ -852,60 +821,6 @@ export function App() {
 
   return (
     <div className="wm-window" id="authg-window">
-      {/* Legacy Vault Upgrade Modal (Only shown if a previous password-protected vault exists) */}
-      {legacyVaultModal && (
-        <div className="wm-modal-overlay">
-          <div className="wm-modal" style={{ textAlign: "center", padding: "24px 20px" }}>
-            <div style={{ margin: "0 auto 12px auto", width: 40, height: 40, borderRadius: 8, background: "var(--card)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--foreground)" }}>
-              <ShieldCheck size={18} />
-            </div>
-            <h3 style={{ fontSize: 14, fontWeight: 600, color: "var(--foreground)", marginBottom: 4 }}>
-              Upgrade Vault
-            </h3>
-            <p style={{ fontSize: 11, color: "var(--muted)", marginBottom: 16 }}>
-              Enter your previous passcode once to upgrade your vault to instant access
-            </p>
-            <input
-              id="legacy-passcode-input"
-              type="password"
-              autoFocus
-              className="wm-input mono"
-              style={{ textAlign: "center", fontSize: 16, letterSpacing: 4, marginBottom: 12 }}
-              placeholder="••••"
-              value={legacyPasscodeInput}
-              disabled={isMigratingLegacy}
-              onChange={(e) => setLegacyPasscodeInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && !isMigratingLegacy && handleMigrateLegacyVault()}
-            />
-            <button
-              id="legacy-unlock-btn"
-              className="wm-btn-primary"
-              onClick={handleMigrateLegacyVault}
-              disabled={isMigratingLegacy}
-              style={{ width: "100%" }}
-            >
-              {isMigratingLegacy ? "Upgrading..." : "Upgrade to Instant Access"}
-            </button>
-            <div style={{ marginTop: 14 }}>
-              <button
-                type="button"
-                onClick={handleResetLegacyVault}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "var(--muted)",
-                  fontSize: 11,
-                  cursor: "pointer",
-                  textDecoration: "underline",
-                  padding: "4px 8px"
-                }}
-              >
-                Forgot passcode? Reset vault
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {currentView === "settings" ? (
         <>
           {/* Settings Full Page Header */}

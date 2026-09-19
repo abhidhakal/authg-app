@@ -104,17 +104,17 @@ fn get_all_codes(accounts: Vec<OtpAccount>) -> Result<Vec<AccountWithCode>, Stri
 #[tauri::command]
 fn save_accounts_vault(
     app: tauri::AppHandle,
-    pin: String,
+    pin: Option<String>,
     accounts: Vec<OtpAccount>,
 ) -> Result<(), String> {
     let path = get_vault_path(&app)?;
-    vault::save_vault_to_path(&path, &pin, &accounts)
+    vault::save_vault_to_path(&path, pin.as_deref().unwrap_or(""), &accounts)
 }
 
 #[tauri::command]
-fn load_accounts_vault(app: tauri::AppHandle, pin: String) -> Result<Vec<OtpAccount>, String> {
+fn load_accounts_vault(app: tauri::AppHandle, pin: Option<String>) -> Result<Vec<OtpAccount>, String> {
     let path = get_vault_path(&app)?;
-    vault::load_vault_from_path(&path, &pin)
+    vault::load_vault_from_path(&path, pin.as_deref().unwrap_or(""))
 }
 
 #[tauri::command]
