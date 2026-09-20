@@ -109,7 +109,25 @@ Random 96-bit IV     ───────────────────�
 
 ---
 
-## Installation & Build
+## Download & Installation
+
+### Pre-built Binaries
+
+You can download pre-built installers for macOS (Apple Silicon & Intel), Windows, and Linux directly from:
+- **Official Website:** [authg.abhinavdhakal.com/download](https://authg.abhinavdhakal.com/download)
+- **GitHub Releases:** [github.com/abhidhakal/authg-app/releases](https://github.com/abhidhakal/authg-app/releases)
+
+### Homebrew (macOS)
+
+Technical users on macOS can install via Homebrew Cask:
+
+```bash
+brew install --cask abhidhakal/tap/authg
+```
+
+---
+
+## Development & Build
 
 ### Prerequisites
 

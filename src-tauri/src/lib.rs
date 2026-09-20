@@ -131,15 +131,36 @@ fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
+#[allow(unexpected_cfgs)]
+fn open_or_focus_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if let Some(state) = app.try_state::<MenuAppState>() {
             *state.last_blur.lock().unwrap() = None;
         }
-        let _ = window.show();
+        if window.is_minimized().unwrap_or(false) {
+            let _ = window.unminimize();
+        }
+        if !window.is_visible().unwrap_or(false) {
+            let _ = window.show();
+        }
         let _ = window.set_focus();
+
+        #[cfg(target_os = "macos")]
+        {
+            use objc::runtime::Object;
+            use objc::{class, msg_send, sel, sel_impl};
+            unsafe {
+                let ns_app_cls = class!(NSApplication);
+                let ns_app: *mut Object = msg_send![ns_app_cls, sharedApplication];
+                let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
+            }
+        }
     }
+}
+
+#[tauri::command]
+fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    open_or_focus_main_window(&app);
     Ok(())
 }
 
@@ -438,12 +459,22 @@ pub fn run() {
                 .or_else(|| app.default_window_icon().cloned());
 
             if let Some(icon) = tray_icon {
-                let _ = TrayIconBuilder::new()
+                #[allow(unused_mut)]
+                let mut builder = TrayIconBuilder::new()
                     .icon(icon)
                     .icon_as_template(true)
                     .tooltip("AuthG - Google Authenticator for Desktop")
-                    .menu(&tray_menu)
-                    .show_menu_on_left_click(false)
+                    .show_menu_on_left_click(false);
+
+                // On non-macOS platforms (e.g. Windows/Linux), attaching the menu directly
+                // works as expected because the OS distinguishes left/right clicks without AppKit interference.
+                #[cfg(not(target_os = "macos"))]
+                {
+                    builder = builder.menu(&tray_menu);
+                }
+
+                let menu_for_tray = tray_menu.clone();
+                let _ = builder
                     .on_menu_event(|app, event| {
                         match event.id.as_ref() {
                             "quit" => {
@@ -454,43 +485,36 @@ pub fn run() {
                                     if window.is_visible().unwrap_or(false) {
                                         let _ = window.hide();
                                     } else {
-                                        let _ = window.show();
-                                        let _ = window.set_focus();
+                                        open_or_focus_main_window(app);
                                     }
                                 }
                             }
                             _ => {}
                         }
                     })
-                    .on_tray_icon_event(|tray, event| {
-                        if let TrayIconEvent::Click {
-                            button: MouseButton::Left,
-                            button_state: MouseButtonState::Up,
-                            ..
-                        } = event
-                        {
-                            let app = tray.app_handle();
-                            if let Some(window) = app.get_webview_window("main") {
-                                let just_blurred = if let Some(state) = app.try_state::<MenuAppState>() {
-                                    state
-                                        .last_blur
-                                        .lock()
-                                        .unwrap()
-                                        .map_or(false, |t| t.elapsed() < Duration::from_millis(350))
-                                } else {
-                                    false
-                                };
-
-                                if window.is_visible().unwrap_or(false) {
-                                    let _ = window.hide();
-                                } else if !just_blurred {
-                                    if let Some(state) = app.try_state::<MenuAppState>() {
-                                        *state.last_blur.lock().unwrap() = None;
+                    .on_tray_icon_event(move |tray, event| {
+                        match event {
+                            TrayIconEvent::Click {
+                                button: MouseButton::Left,
+                                button_state: MouseButtonState::Up,
+                                ..
+                            } => {
+                                open_or_focus_main_window(tray.app_handle());
+                            }
+                            TrayIconEvent::Click {
+                                button: MouseButton::Right,
+                                button_state: MouseButtonState::Up,
+                                ..
+                            } => {
+                                #[cfg(target_os = "macos")]
+                                {
+                                    let app = tray.app_handle();
+                                    if let Some(window) = app.get_webview_window("main") {
+                                        let _ = window.popup_menu(&menu_for_tray);
                                     }
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
                                 }
                             }
+                            _ => {}
                         }
                     })
                     .build(app);

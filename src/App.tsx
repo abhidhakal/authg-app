@@ -1084,7 +1084,7 @@ export function App() {
                       <ShieldCheck size={13} />
                     </div>
                     <div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>AuthG v1.0.4</div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>AuthG v1.0.5</div>
                       <div style={{ fontSize: 10, color: "var(--muted)" }}>Native Desktop Authenticator</div>
                     </div>
                   </div>

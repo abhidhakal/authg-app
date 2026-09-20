@@ -219,3 +219,36 @@ jobs:
           projectPath: ./
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
+
+  trigger-tap-update:
+    needs: [create-release, build-tauri]
+    if: needs.create-release.outputs.should_release == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Notify Homebrew tap
+        continue-on-error: true
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Triggering Homebrew tap update..."
+          curl -s -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $TAP_TOKEN" \
+            https://api.github.com/repos/abhidhakal/homebrew-tap/dispatches \
+            -d '{"event_type":"new-release"}' || true
+
+  publish-winget:
+    needs: [create-release, build-tauri]
+    if: needs.create-release.outputs.should_release == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Publish to WinGet
+        continue-on-error: true
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: abhidhakal.authg
+          installers-regex: '_x64-setup\.exe$'
+          token: ${{ secrets.WINGET_TOKEN || secrets.TAP_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          fork-user: abhidhakal
+
+
