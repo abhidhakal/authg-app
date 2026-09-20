@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
+PackageIdentifier: abhidhakal.authg
+PackageVersion: 1.0.4
+PackageLocale: en-US
+Publisher: Abhinav Dhakal
+PublisherUrl: https://github.com/abhidhakal
+PublisherSupportUrl: https://github.com/abhidhakal/authg-app/issues
+Author: Abhinav Dhakal
+PackageName: AuthG
+PackageUrl: https://github.com/abhidhakal/authg-app
+License: MIT
+LicenseUrl: https://github.com/abhidhakal/authg-app/blob/main/LICENSE
+Copyright: Copyright (c) 2026 Abhinav Dhakal
+ShortDescription: Minimal native desktop Google Authenticator with encrypted local vault
+Description: AuthG is a minimal, lightweight, zero-telemetry native desktop authenticator designed for Google Authenticator 2FA accounts.
+Moniker: authg
+Tags:
+  - 2fa
+  - totp
+  - authenticator
+  - google-authenticator
+  - security
+  - tauri
+ReleaseNotesUrl: https://github.com/abhidhakal/authg-app/releases/tag/v1.0.4
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
