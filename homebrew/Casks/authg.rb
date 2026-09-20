@@ -1,21 +1,19 @@
 cask "authg" do
-  version "1.0.4"
+  version "1.0.6"
 
   if Hardware::CPU.arm?
-    url "https://github.com/abhidhakal/authg-app/releases/download/v#{version}/AuthG_#{version}_aarch64.dmg",
-        verified: "github.com/abhidhakal/authg-app/"
-    sha256 "c06b176b4914c6b76a92908c97a1d55dba925e863f1ff274666693e6f8ea2732"
+    url "https://github.com/abhidhakal/authg-app/releases/download/v#{version}/AuthG_#{version}_aarch64.dmg"
+    sha256 "63a2aae47318e3f412c28042de8b32d06d5b22b6b678daeaa8a18404c6c25244"
   else
-    url "https://github.com/abhidhakal/authg-app/releases/download/v#{version}/AuthG_#{version}_x64.dmg",
-        verified: "github.com/abhidhakal/authg-app/"
-    sha256 "84373df2212f64c9a74a91b81462b0140b5888d4378cfc3532517a1dd467f91d"
+    url "https://github.com/abhidhakal/authg-app/releases/download/v#{version}/AuthG_#{version}_x64.dmg"
+    sha256 "9461afc7fb4fca75112b0ca23bac414cd435e4ae538c488ec45b18853f5f3ea0"
   end
 
   name "AuthG"
   desc "Open-source, offline desktop 2FA authenticator for the menu bar"
   homepage "https://authg.abhinavdhakal.com"
 
-  depends_on macos: ">= :catalina"
+  depends_on macos: ">= :big_sur"
 
   app "AuthG.app"
 
