@@ -397,7 +397,25 @@ async fn check_app_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
             body: None,
             date: None,
         }),
-        Err(e) => Err(format!("Check for update failed: {}", e)),
+        Err(e) => {
+            let err_str = e.to_string();
+            // If the remote release JSON is not found, 404s, or remote has no release for this target,
+            // treat it cleanly as up-to-date rather than alarming the user with a parsing error.
+            if err_str.contains("Could not fetch a valid release JSON")
+                || err_str.contains("ReleaseNotFound")
+                || err_str.contains("404")
+            {
+                Ok(UpdateInfo {
+                    should_update: false,
+                    current_version: app.package_info().version.to_string(),
+                    version: None,
+                    body: None,
+                    date: None,
+                })
+            } else {
+                Err(format!("Check for update failed: {}", err_str))
+            }
+        }
     }
 }
 
