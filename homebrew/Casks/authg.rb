@@ -13,7 +13,7 @@ cask "authg" do
   desc "Open-source, offline desktop 2FA authenticator for the menu bar"
   homepage "https://authg.abhinavdhakal.com"
 
-  depends_on macos: ">= :big_sur"
+  depends_on macos: :big_sur
 
   app "AuthG.app"
 

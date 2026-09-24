@@ -57,8 +57,8 @@ Two-factor authentication is mandatory for security, but the mobile workflow bre
                  ▼                                               ▼
    ┌───────────────────────────┐                   ┌───────────────────────────┐
    │    Local Encrypted Vault  │                   │    Menu Bar Access        │
-   │  PBKDF2 + AES-256-GCM     │                   │  One-click from top bar   │
-   │  Stored on local SSD only │                   │  Click to copy 6 digits   │
+   │  AES-256-GCM, key in the  │                   │  One-click from top bar   │
+   │  system keystore          │                   │  Click to copy 6 digits   │
    └───────────────────────────┘                   └───────────────────────────┘
 ```
 
@@ -66,14 +66,15 @@ Two-factor authentication is mandatory for security, but the mobile workflow bre
 
 ## Features
 
-- **Instant `⌘V` Paste Import**: Simply snap a screenshot of Google Authenticator's export QR code and hit `⌘V`. AuthG decodes protobuf payloads directly on your CPU in under a second.
-- **100% Offline & Private**: Zero telemetry, zero analytics, and zero network calls. Your credentials never touch an external server or cloud database.
-- **Hardware-Accelerated Encryption**: Vaults are encrypted using `AES-256-GCM` with keys derived via `PBKDF2-HMAC-SHA256` (600,000 iterations) from your master PIN.
-- **Native Menu Bar & Tray Residency**: Built on Tauri v2 and Rust. Uses under 20MB of RAM and remains completely unobtrusive until clicked.
-- **RFC 6238 Mathematical Compliance**: 100% identical to Google Authenticator. Compatible with HMAC-SHA1, SHA256, SHA512, 6-digit, and 8-digit TOTP tokens.
-- **Privacy Mode**: Built-in screen blur hides 6-digit codes during Zoom meetings or in public coffee shops until you hover over them.
-- **Guarded Account Details & Deletion**: Destructive actions are isolated behind dedicated confirmation flows to prevent accidental token loss.
-- **Portable Backups**: Export or restore encrypted and JSON backups freely with zero vendor lock-in.
+- **`⌘V` Paste Import**: Screenshot Google Authenticator's export QR code and press `⌘V`, or scan it with your webcam. Decoded locally.
+- **Type, Enter, Done**: Search opens on the top match, so typing part of a name and pressing Enter copies its code.
+- **Never Paste an Expired Code**: In the last seconds of each code, the next one is shown too. Accounts you use most stay at the top.
+- **Encrypted Local Vault**: AES-256-GCM. On macOS and Windows the key is kept in the system keystore (Keychain / Credential Manager), not in the vault file.
+- **Native Menu Bar Popup**: Opens under its icon, closes when you click away, follows you across Spaces. No Dock clutter.
+- **Standard TOTP (RFC 6238)**: SHA1, SHA256, SHA512, 6 and 8 digits. HOTP (counter-based) accounts aren't supported yet.
+- **Privacy Mode**: Blurs codes until you hover over them, for screen sharing.
+- **JSON Backups**: Export or restore anytime, no lock-in. The export file is **not** encrypted, so store it carefully.
+- **Offline**: No telemetry or analytics. The only network request is the update check, when you click it.
 
 ---
 
@@ -83,29 +84,28 @@ Two-factor authentication is mandatory for security, but the mobile workflow bre
 | :--- | :--- | :--- |
 | `Menu Bar / Tray` | **Global** | Click icon to toggle AuthG popup |
 | `⌘ + V` | **App** | Automatically parse & import QR screenshot from clipboard |
-| `⌘ + K` or `/` | **App** | Instantly focus the account search filter |
+| `⌘ + K` | **App** | Focus the account search |
+| `Type` + `Enter` | **App** | Copy the top search match |
+| `↑` / `↓` + `Enter` | **App** | Move between accounts and copy |
 | `Click Card` | **App** | Copy 6-digit TOTP code to clipboard |
 | `Esc` | **App** | Navigate back to vault, clear search, or dismiss modals |
 | `Right Click` or `(i)` | **App** | Open account details modal and safe deletion options |
+| `⌘ + Q` | **App** | Quit AuthG |
 
 ---
 
 ## Security Architecture
 
 ```
-User Master PIN
-      │
-      ▼
-[ PBKDF2-HMAC-SHA256 ] ──( 600,000 rounds + machine salt )──► 256-bit Key
-                                                                 │
-Plaintext Vault JSON ────────────────────────────────────────────┼──► [ AES-256-GCM ] ──► authg_vault.enc
-Random 96-bit IV     ────────────────────────────────────────────┘
+Random 256-bit key ──► macOS Keychain / Windows Credential Manager
+                                   │
+Vault JSON ──────► [ AES-256-GCM, fresh random nonce ] ──► vault.enc (0600)
 ```
 
-1. **Key Derivation**: Master PINs are hashed using PBKDF2 with SHA-256 across 600,000 iterations to withstand offline GPU brute-force attacks.
-2. **Authenticated Encryption**: Vault data is encrypted with `AES-256-GCM`. A 16-byte Poly1305 authentication tag verifies that the ciphertext has not been modified or corrupted.
-3. **CSPRNG Entropy**: Nonces and salts are sampled directly from operating system entropy (`/dev/urandom` on macOS/Linux, `BCryptGenRandom` on Windows).
-4. **Auto-Clearing Clipboard**: Copied 2FA codes are automatically wiped from the system clipboard after a customizable timeout (default: 30 seconds).
+1. **Key storage**: On first launch AuthG creates a random 256-bit key and stores it in the system keystore. The vault file never contains it, so a copied `vault.enc` is useless on its own.
+2. **Encryption**: The vault is encrypted with `AES-256-GCM` with a fresh random nonce on every save. Tampering makes decryption fail.
+3. **Linux**: No keystore yet. The vault is encrypted, but the key can be recomputed from the file, so rely on disk encryption.
+4. **Clipboard**: Copied codes are marked concealed (clipboard managers skip them) and cleared after 30 seconds by default, if the clipboard still holds that code.
 
 ---
 
@@ -124,6 +124,10 @@ Technical users on macOS can install via Homebrew Cask:
 ```bash
 brew install --cask abhidhakal/tap/authg
 ```
+
+### First launch on macOS
+
+AuthG is signed but not notarized by Apple (that needs a paid developer account), so macOS blocks the first launch. Open **System Settings → Privacy & Security** and click **Open Anyway**, or run `xattr -cr /Applications/AuthG.app`. This is only needed once; updates install without it.
 
 ---
 

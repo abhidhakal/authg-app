@@ -38,6 +38,14 @@ import {
 import { scanQrFromFile, scanQrFromVideo, scanQrFromDataUrl } from "./utils/qrScanner";
 
 // Safe invoke wrapper for Tauri
+const APP_VERSION = __APP_VERSION__;
+
+function formatCode(raw: string): string {
+  if (raw.length === 6) return `${raw.slice(0, 3)} ${raw.slice(3)}`;
+  if (raw.length === 8) return `${raw.slice(0, 4)} ${raw.slice(4)}`;
+  return raw;
+}
+
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -56,31 +64,27 @@ async function openExternalUrl(url: string) {
 }
 
 interface AppSettings {
-  showInDock: boolean;
-  alwaysOnTop: boolean;
-  closeOnBlur: boolean;
   openAtLogin: boolean;
   privacyMode: boolean;
   clipboardTimeoutSec: number;
   theme: "dark" | "light" | "system";
-  accentColor: "monochrome" | "titanium" | "slate" | "graphite" | "onyx";
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  showInDock: false,
-  alwaysOnTop: false,
-  closeOnBlur: true,
   openAtLogin: true,
   privacyMode: false,
   clipboardTimeoutSec: 30,
   theme: "system",
-  accentColor: "monochrome",
 };
 
 export function App() {
   // Accounts vault (kept strictly in memory when app is running - zero plaintext in web storage)
   const [accounts, setAccounts] = useState<OtpAccount[]>([]);
-  const [hasVaultOnDisk, setHasVaultOnDisk] = useState<boolean | null>(null);
+  // Saving is only allowed once the vault has loaded; otherwise an unread vault would be overwritten with [].
+  const [vaultReady, setVaultReady] = useState(false);
+  const [vaultError, setVaultError] = useState<string | null>(null);
+  // Copies are recorded here and applied when the popup hides, so the list doesn't reorder under the cursor.
+  const pendingUseRef = useRef(new Map<string, number>());
 
   // Settings
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -88,9 +92,6 @@ export function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (parsed.closeOnBlur === undefined) {
-          parsed.closeOnBlur = true;
-        }
         return { ...DEFAULT_SETTINGS, ...parsed };
       } catch {
         return DEFAULT_SETTINGS;
@@ -109,7 +110,6 @@ export function App() {
   const [currentView, setCurrentView] = useState<"vault" | "settings" | "help">("vault");
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [selectedAccount, setSelectedAccount] = useState<OtpAccount | null>(null);
-  const [mirrorGoogleMode, setMirrorGoogleMode] = useState(false);
 
 
 
@@ -125,7 +125,6 @@ export function App() {
   const [manualAlgo, setManualAlgo] = useState<"SHA1" | "SHA256" | "SHA512">("SHA1");
 
   // Migration URI input
-  const [migrationUriText, setMigrationUriText] = useState("");
 
   // Camera Scanning
   const [isCameraActive, setIsCameraActive] = useState(false);
@@ -165,10 +164,16 @@ export function App() {
     };
 
     applyTheme();
-    root.setAttribute("data-accent", settings.accentColor || "monochrome");
+    if ((window as any).__TAURI_INTERNALS__) {
+      import("@tauri-apps/api/window").then(({ getCurrentWindow }) =>
+        getCurrentWindow()
+          .setTheme(settings.theme === "system" ? null : settings.theme)
+          .catch(() => {})
+      );
+    }
     media.addEventListener("change", applyTheme);
     return () => media.removeEventListener("change", applyTheme);
-  }, [settings.theme, settings.accentColor]);
+  }, [settings.theme]);
 
   // Sync with native disk vault on boot and safely migrate/purge any legacy plaintext storage
   useEffect(() => {
@@ -179,29 +184,26 @@ export function App() {
       try {
         diskExists = await tauriInvoke<boolean>("check_vault_exists");
       } catch {}
-      setHasVaultOnDisk(diskExists);
 
-      if (!diskExists) {
-        // Fresh install or migrating from legacy plaintext storage
-        if (legacyAccountsStr) {
-          try {
-            const parsed = JSON.parse(legacyAccountsStr);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              await tauriInvoke("save_accounts_vault", { accounts: parsed });
-              setAccounts(parsed);
-              setHasVaultOnDisk(true);
-            }
-          } catch {}
-        }
-      } else {
-        // Vault exists on disk. Load instantly without passcode
+      if (diskExists) {
         try {
-          const autoLoaded = await tauriInvoke<OtpAccount[]>("load_accounts_vault");
-          setAccounts(autoLoaded);
-        } catch {
-          // If vault was encrypted with an obsolete passcode or is corrupt, reset to clean instant access
-          await tauriInvoke("save_accounts_vault", { accounts: [] }).catch(() => {});
-          setAccounts([]);
+          setAccounts(await tauriInvoke<OtpAccount[]>("load_accounts_vault"));
+        } catch (e) {
+          // Never overwrite a vault we couldn't read (e.g. Keychain access denied): stay read-only and say why.
+          setVaultError(String(e));
+          return;
+        }
+      } else if (legacyAccountsStr) {
+        // Migrating from legacy plaintext storage: only purge it once it's safely in the vault
+        try {
+          const parsed = JSON.parse(legacyAccountsStr);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            await tauriInvoke("save_accounts_vault", { accounts: parsed });
+            setAccounts(parsed);
+          }
+        } catch (e) {
+          setVaultError(String(e));
+          return;
         }
       }
 
@@ -209,6 +211,7 @@ export function App() {
       localStorage.removeItem("authg_accounts");
       localStorage.removeItem("authdesk_accounts");
       localStorage.removeItem("authg_pin");
+      setVaultReady(true);
     }
 
     initVault();
@@ -217,20 +220,14 @@ export function App() {
   // Save settings
   useEffect(() => {
     localStorage.setItem("authg_settings", JSON.stringify(settings));
-    tauriInvoke("set_show_in_dock", { show: settings.showInDock }).catch(() => {});
-    tauriInvoke("set_always_on_top", { alwaysOnTop: settings.alwaysOnTop }).catch(() => {});
-    tauriInvoke("set_close_on_blur", { enable: settings.closeOnBlur }).catch(() => {});
     tauriInvoke("set_open_at_login", { enable: settings.openAtLogin }).catch(() => {});
   }, [settings]);
 
   // Persist accounts to encrypted vault on change (zero web storage, instant AES-256 persistence)
   useEffect(() => {
-    if (accounts.length > 0 || hasVaultOnDisk) {
-      tauriInvoke("save_accounts_vault", { accounts })
-        .then(() => setHasVaultOnDisk(true))
-        .catch(() => {});
-    }
-  }, [accounts, hasVaultOnDisk]);
+    if (!vaultReady) return;
+    tauriInvoke("save_accounts_vault", { accounts }).catch((e) => showToast(`Could not save vault: ${e}`));
+  }, [accounts, vaultReady]);
 
   // Global hotkey / paste listener (⌘V) to automatically import QR images
   useEffect(() => {
@@ -323,6 +320,23 @@ export function App() {
     };
   }, []);
 
+  // Popup was dismissed (click outside, tray click, Esc): stop the camera, apply recent-use ordering
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    if ((window as any).__TAURI_INTERNALS__) {
+      import("@tauri-apps/api/event").then(({ listen }) =>
+        listen("popup-hidden", () => {
+          stopCamera();
+          const used = pendingUseRef.current;
+          if (used.size === 0) return;
+          pendingUseRef.current = new Map();
+          setAccounts((prev) => prev.map((a) => (used.has(a.id) ? { ...a, lastUsed: used.get(a.id) } : a)));
+        }).then((fn) => (unlisten = fn))
+      );
+    }
+    return () => unlisten?.();
+  }, []);
+
   // Global key navigation (Escape to go back/close, ⌘K to search)
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -336,6 +350,8 @@ export function App() {
           setCurrentView("vault");
         } else if (searchQuery) {
           setSearchQuery("");
+        } else {
+          tauriInvoke("hide_main_window").catch(() => {});
         }
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
@@ -368,12 +384,12 @@ export function App() {
       const computed: Record<string, CodeInfo> = {};
       for (const acc of accounts) {
         try {
-          const res = await computeTotp(
-            acc.secret,
-            acc.algorithm,
-            acc.digits,
-            acc.period
-          );
+          // HOTP is counter-based; a time-based code for it would look valid but never work
+          if (acc.otpType === "HOTP") throw new Error("HOTP unsupported");
+          const res = await computeTotp(acc.secret, acc.algorithm, acc.digits, acc.period, nowSec);
+          if (res.secondsRemaining <= 5) {
+            res.nextCode = (await computeTotp(acc.secret, acc.algorithm, acc.digits, acc.period, nowSec + acc.period)).code;
+          }
           computed[acc.id] = res;
         } catch {
           computed[acc.id] = {
@@ -399,98 +415,102 @@ export function App() {
 
   // Camera QR scanner logic
   useEffect(() => {
+    if (!isCameraActive) return;
     let animId: number;
+    let scanTimer: ReturnType<typeof setTimeout>;
     let isActive = true;
 
-    if (isCameraActive) {
-      tauriInvoke("set_prevent_close_on_blur", { prevent: true }).catch(() => {});
+    tauriInvoke("set_prevent_close_on_blur", { prevent: true }).catch(() => {});
 
-      const startCamera = async () => {
+    const startCamera = async () => {
+      try {
+        // Check native macOS permission status first
         try {
-          // Check native macOS permission status first
-          try {
-            const permStatus = await tauriInvoke<string>("check_camera_permission");
-            if (permStatus === "denied") {
-              showToast("Camera permission denied. Enable Camera in macOS System Settings > Privacy & Security.");
-              setIsCameraActive(false);
-              return;
-            }
-          } catch {}
-
-          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            showToast("Camera API not supported in this environment");
+          const permStatus = await tauriInvoke<string>("check_camera_permission");
+          if (permStatus === "denied") {
+            showToast("Camera permission denied. Enable Camera in macOS System Settings > Privacy & Security.");
             setIsCameraActive(false);
             return;
           }
+        } catch {}
 
-          let stream: MediaStream;
-          try {
-            stream = await navigator.mediaDevices.getUserMedia({
-              video: {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-              },
-            });
-          } catch {
-            stream = await navigator.mediaDevices.getUserMedia({ video: true });
-          }
-
-          if (!isActive) {
-            stream.getTracks().forEach((t) => t.stop());
-            return;
-          }
-
-          streamRef.current = stream;
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-            videoRef.current.setAttribute("playsinline", "true");
-            await videoRef.current.play().catch(() => {});
-          }
-
-          const checkFrame = () => {
-            if (!isActive) return;
-            if (videoRef.current && videoRef.current.videoWidth > 0) {
-              const scanned = scanQrFromVideo(videoRef.current);
-              if (scanned) {
-                handleScannedData(scanned);
-                stopCamera();
-                return;
-              }
-            }
-            animId = requestAnimationFrame(checkFrame);
-          };
-
-          animId = requestAnimationFrame(checkFrame);
-        } catch (err: any) {
-          console.error("Camera access error:", err);
-          if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
-            showToast("Camera access denied. Enable Camera in macOS System Settings > Privacy & Security > Camera.");
-          } else if (err?.name === "NotFoundError" || err?.name === "DevicesNotFoundError") {
-            showToast("No camera detected on this machine.");
-          } else {
-            showToast(`Camera error: ${err?.message || err?.name || "Unavailable"}`);
-          }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          showToast("Camera API not supported in this environment");
           setIsCameraActive(false);
+          return;
         }
-      };
 
-      startCamera();
-    }
+        let stream: MediaStream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
+          });
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        }
+
+        if (!isActive) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.setAttribute("playsinline", "true");
+          await videoRef.current.play().catch(() => {});
+        }
+
+        const checkFrame = () => {
+          if (!isActive) return;
+          if (videoRef.current && videoRef.current.videoWidth > 0) {
+            const scanned = scanQrFromVideo(videoRef.current);
+            if (scanned) {
+              handleScannedData(scanned);
+              stopCamera();
+              return;
+            }
+          }
+          scanTimer = setTimeout(() => (animId = requestAnimationFrame(checkFrame)), 150);
+        };
+
+        animId = requestAnimationFrame(checkFrame);
+      } catch (err: any) {
+        console.error("Camera access error:", err);
+        if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
+          showToast("Camera access denied. Enable Camera in macOS System Settings > Privacy & Security > Camera.");
+        } else if (err?.name === "NotFoundError" || err?.name === "DevicesNotFoundError") {
+          showToast("No camera detected on this machine.");
+        } else {
+          showToast(`Camera error: ${err?.message || err?.name || "Unavailable"}`);
+        }
+        setIsCameraActive(false);
+      }
+    };
+
+    startCamera();
 
     return () => {
       isActive = false;
       cancelAnimationFrame(animId);
-      stopCamera();
+      clearTimeout(scanTimer);
+      releaseCamera();
     };
   }, [isCameraActive]);
 
-  function stopCamera() {
+  function releaseCamera() {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
-    setIsCameraActive(false);
     tauriInvoke("set_prevent_close_on_blur", { prevent: false }).catch(() => {});
+  }
+
+  function stopCamera() {
+    setIsCameraActive(false); // effect cleanup releases the stream
   }
 
   function showToast(msg: string) {
@@ -522,6 +542,7 @@ export function App() {
       }
 
       setCopiedId(id);
+      pendingUseRef.current.set(id, Date.now());
       showToast(clearTime > 0 ? `Copied ${raw} (clears in ${clearTime}s)` : `Copied ${raw}`);
       setTimeout(() => setCopiedId(null), 1500);
     } catch {
@@ -534,17 +555,12 @@ export function App() {
       if (data.startsWith("otpauth-migration://")) {
         const imported = parseGoogleMigrationUri(data);
         if (imported.length > 0) {
-          if (mirrorGoogleMode) {
-            setAccounts(imported);
-            showToast(`Mirrored ${imported.length} accounts (synced with phone)`);
-          } else {
-            setAccounts((prev) => {
-              const existing = new Set(prev.map((a) => `${a.issuer}:${a.name}`.toLowerCase()));
-              const fresh = imported.filter((a) => !existing.has(`${a.issuer}:${a.name}`.toLowerCase()));
-              return [...fresh, ...prev];
-            });
-            showToast(`Imported ${imported.length} accounts`);
-          }
+          setAccounts((prev) => {
+            const existing = new Set(prev.map((a) => `${a.issuer}:${a.name}`.toLowerCase()));
+            const fresh = imported.filter((a) => !existing.has(`${a.issuer}:${a.name}`.toLowerCase()));
+            return [...fresh, ...prev];
+          });
+          showToast(`Imported ${imported.length} accounts`);
           setIsImportModalOpen(false);
           return;
         }
@@ -707,7 +723,8 @@ export function App() {
     if (confirm("DANGER: Wipe all accounts and delete local vault? This cannot be undone.")) {
       setAccounts([]);
       setCodes({});
-      setHasVaultOnDisk(false);
+      setVaultError(null);
+      setVaultReady(true);
       localStorage.removeItem("authg_accounts");
       localStorage.removeItem("authdesk_accounts");
       localStorage.removeItem("authg_pin");
@@ -761,17 +778,15 @@ export function App() {
 
   const filtered = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    if (!q) return accounts;
-    return accounts.filter(
-      (a) =>
-        a.issuer.toLowerCase().includes(q) ||
-        a.name.toLowerCase().includes(q)
-    );
+    const matches = q
+      ? accounts.filter((a) => a.issuer.toLowerCase().includes(q) || a.name.toLowerCase().includes(q))
+      : accounts;
+    return [...matches].sort((a, b) => (b.lastUsed ?? 0) - (a.lastUsed ?? 0));
   }, [accounts, searchQuery]);
 
-  // Reset keyboard card focus when search query changes
+  // Searching selects the top match, so type-then-Enter copies it
   useEffect(() => {
-    setFocusedIndex(-1);
+    setFocusedIndex(searchQuery.trim() ? 0 : -1);
   }, [searchQuery]);
 
   // Arrow key navigation (↑ / ↓) across accounts and Enter on focused card to copy
@@ -824,7 +839,7 @@ export function App() {
       {currentView === "settings" ? (
         <>
           {/* Settings Full Page Header */}
-          <header className="wm-page-header" data-tauri-drag-region>
+          <header className="wm-page-header">
             <button
               id="settings-back-btn"
               className="wm-back-btn"
@@ -841,7 +856,7 @@ export function App() {
           <main className="wm-page-content" id="settings-page">
             {/* Section 1: Appearance & Theme */}
             <section>
-              <div className="wm-section-title">Appearance & Theme</div>
+              <div className="wm-section-title">Appearance</div>
               <div className="wm-section-card">
                 <div className="wm-field">
                   <label className="wm-label">Theme Mode</label>
@@ -885,80 +900,17 @@ export function App() {
                   </div>
                 </div>
 
-                <div className="wm-field" style={{ marginTop: 6 }}>
-                  <label className="wm-label">Monochrome Palette</label>
-                  <div className="wm-color-swatches">
-                    {[
-                      { id: "monochrome", color: "#ffffff", name: "Pure Monochrome" },
-                      { id: "titanium", color: "#a1a1aa", name: "Titanium" },
-                      { id: "slate", color: "#64748b", name: "Slate" },
-                      { id: "graphite", color: "#71717a", name: "Graphite" },
-                      { id: "onyx", color: "#3f3f46", name: "Onyx" },
-                    ].map((swatch) => (
-                      <div
-                        key={swatch.id}
-                        id={`swatch-${swatch.id}`}
-                        className={`wm-swatch ${settings.accentColor === swatch.id ? "active" : ""}`}
-                        style={{ backgroundColor: swatch.color }}
-                        title={swatch.name}
-                        onClick={() => setSettings((s) => ({ ...s, accentColor: swatch.id as any }))}
-                      />
-                    ))}
-                  </div>
-                </div>
               </div>
             </section>
 
-            {/* Section 2: System & Window */}
+            {/* Section 2: General */}
             <section>
-              <div className="wm-section-title">System & Window</div>
+              <div className="wm-section-title">General</div>
               <div className="wm-section-card">
                 <div className="wm-setting-row">
                   <div className="wm-setting-info">
-                    <span className="wm-setting-title">Keep Open in macOS Dock</span>
-                    <span className="wm-setting-desc">Show app icon in Dock alongside Menu Bar</span>
-                  </div>
-                  <div
-                    id="toggle-dock-btn"
-                    className={`wm-toggle ${settings.showInDock ? "active" : ""}`}
-                    onClick={() => setSettings((s) => ({ ...s, showInDock: !s.showInDock }))}
-                  >
-                    <div className="wm-toggle-thumb" />
-                  </div>
-                </div>
-
-                <div className="wm-setting-row">
-                  <div className="wm-setting-info">
-                    <span className="wm-setting-title">Close on Outside Click</span>
-                    <span className="wm-setting-desc">Dismiss window when clicking away like standard menu bar apps</span>
-                  </div>
-                  <div
-                    id="toggle-close-blur-btn"
-                    className={`wm-toggle ${settings.closeOnBlur ? "active" : ""}`}
-                    onClick={() => setSettings((s) => ({ ...s, closeOnBlur: !s.closeOnBlur }))}
-                  >
-                    <div className="wm-toggle-thumb" />
-                  </div>
-                </div>
-
-                <div className="wm-setting-row">
-                  <div className="wm-setting-info">
-                    <span className="wm-setting-title">Always on Top</span>
-                    <span className="wm-setting-desc">Pin window above other apps when copying logins</span>
-                  </div>
-                  <div
-                    id="toggle-always-top-btn"
-                    className={`wm-toggle ${settings.alwaysOnTop ? "active" : ""}`}
-                    onClick={() => setSettings((s) => ({ ...s, alwaysOnTop: !s.alwaysOnTop }))}
-                  >
-                    <div className="wm-toggle-thumb" />
-                  </div>
-                </div>
-
-                <div className="wm-setting-row">
-                  <div className="wm-setting-info">
                     <span className="wm-setting-title">Open at Login</span>
-                    <span className="wm-setting-desc">Automatically launch AuthG into your Menu Bar when your Mac starts</span>
+                    <span className="wm-setting-desc">Start in the menu bar when your Mac starts</span>
                   </div>
                   <div
                     id="toggle-autostart-btn"
@@ -969,24 +921,17 @@ export function App() {
                   </div>
                 </div>
 
-                <div className="wm-setting-row">
-                  <div className="wm-setting-info">
-                    <span className="wm-setting-title">Quick Access</span>
-                    <span className="wm-setting-desc">Click menu bar icon or system tray anytime</span>
-                  </div>
-                  <span className="wm-badge">Menu Bar</span>
-                </div>
               </div>
             </section>
 
-            {/* Section 3: Security & Passcode */}
+            {/* Section 3: Security */}
             <section>
-              <div className="wm-section-title">Security & Passcode</div>
+              <div className="wm-section-title">Security</div>
               <div className="wm-section-card">
                 <div className="wm-setting-row">
                   <div className="wm-setting-info">
                     <span className="wm-setting-title">Privacy Mode</span>
-                    <span className="wm-setting-desc">Blur 6-digit codes until hovered or clicked</span>
+                    <span className="wm-setting-desc">Blur codes until you hover or select an account</span>
                   </div>
                   <div
                     id="toggle-privacy-btn"
@@ -1012,25 +957,15 @@ export function App() {
                   </select>
                 </div>
 
-                <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: 10, marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>Vault Encryption</span>
-                  <p style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.35 }}>
-                    Your TOTP secret seeds are encrypted on disk with AES-256-GCM and strict POSIX permissions (0600), isolated strictly to your operating system account.
-                  </p>
-                </div>
               </div>
             </section>
 
             {/* Section 4: Data & Vault Backup */}
             <section>
-              <div className="wm-section-title">Data & Vault Backup</div>
+              <div className="wm-section-title">Backup</div>
               <div className="wm-section-card">
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>Offline Backup & Restore</span>
-                  <p style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.3 }}>
-                    Export all accounts into an offline backup file, or restore from a previous export.
-                  </p>
-                  <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                  <div style={{ display: "flex", gap: 8 }}>
                     <button id="export-backup-btn" className="wm-btn-secondary" style={{ flex: 1 }} onClick={handleExportBackup}>
                       <FileDown size={13} /> Export JSON
                     </button>
@@ -1074,9 +1009,9 @@ export function App() {
               </div>
             </section>
 
-            {/* Section 5: Application & Updates */}
+            {/* Section 5: About */}
             <section>
-              <div className="wm-section-title">Application & Updates</div>
+              <div className="wm-section-title">About</div>
               <div className="wm-section-card">
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingBottom: 10, borderBottom: "1px solid var(--border)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1084,7 +1019,7 @@ export function App() {
                       <ShieldCheck size={13} />
                     </div>
                     <div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>AuthG v1.0.6</div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>AuthG v{APP_VERSION}</div>
                       <div style={{ fontSize: 10, color: "var(--muted)" }}>Native Desktop Authenticator</div>
                     </div>
                   </div>
@@ -1103,15 +1038,15 @@ export function App() {
 
                 {/* Update status message / prompt */}
                 {updateStatus.state === "up-to-date" && (
-                  <div style={{ padding: "8px 10px", marginTop: 4, borderRadius: 6, background: "rgba(16, 185, 129, 0.08)", border: "1px solid rgba(16, 185, 129, 0.2)", display: "flex", alignItems: "center", gap: 6 }}>
-                    <Check size={13} style={{ color: "#10b981", flexShrink: 0 }} />
+                  <div style={{ padding: "8px 10px", marginTop: 4, borderRadius: 6, background: "var(--accent)", border: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 6 }}>
+                    <Check size={13} style={{ color: "var(--foreground)", flexShrink: 0 }} />
                     <span style={{ fontSize: 11, color: "var(--foreground)", fontWeight: 500 }}>You're on the latest version of AuthG.</span>
                   </div>
                 )}
 
                 {updateStatus.state === "error" && (
                   <div style={{ padding: "8px 10px", marginTop: 4, borderRadius: 6, background: "rgba(239, 68, 68, 0.08)", border: "1px solid rgba(239, 68, 68, 0.2)", display: "flex", alignItems: "center", gap: 6 }}>
-                    <AlertTriangle size={13} style={{ color: "#ef4444", flexShrink: 0 }} />
+                    <AlertTriangle size={13} style={{ color: "var(--danger-title)", flexShrink: 0 }} />
                     <span style={{ fontSize: 11, color: "var(--foreground)" }}>{updateStatus.error || "Could not reach update server."}</span>
                   </div>
                 )}
@@ -1149,59 +1084,6 @@ export function App() {
                   </div>
                 )}
 
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 10, borderTop: "1px solid var(--border)", marginTop: 6 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div>
-                      <div style={{ fontSize: 11, fontWeight: 500, color: "var(--foreground)" }}>Official Website</div>
-                      <div style={{ fontSize: 10, color: "var(--muted)" }}>authg.abhinavdhakal.com</div>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="wm-btn-secondary"
-                    style={{ fontSize: 11, padding: "5px 10px", gap: 5 }}
-                    onClick={() => openExternalUrl("https://authg.abhinavdhakal.com")}
-                  >
-                    <Globe size={12} /> Website <ExternalLink size={10} />
-                  </button>
-                </div>
-
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 10 }}>
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 500, color: "var(--foreground)" }}>Support Project</div>
-                    <div style={{ fontSize: 10, color: "var(--muted)" }}>Buy me momo to support development</div>
-                  </div>
-                  <button
-                    type="button"
-                    className="wm-btn-secondary"
-                    style={{ fontSize: 11, padding: "5px 10px", gap: 5, color: "var(--foreground)" }}
-                    onClick={() => openExternalUrl("https://buymemomo.com/abhinavdhakal")}
-                  >
-                    <Heart size={12} className="wm-heart-icon" /> Support Me <ExternalLink size={10} />
-                  </button>
-                </div>
-              </div>
-            </section>
-
-            {/* Section 6: Application Control */}
-            <section>
-              <div className="wm-section-title">Application</div>
-              <div className="wm-settings-card">
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>Quit AuthG</div>
-                    <div style={{ fontSize: 11, color: "var(--muted)" }}>Terminate background menu bar app (⌘Q)</div>
-                  </div>
-                  <button
-                    type="button"
-                    id="settings-quit-btn"
-                    className="wm-btn-danger"
-                    style={{ fontSize: 11, padding: "5px 12px", gap: 5, borderRadius: 6, display: "inline-flex", alignItems: "center" }}
-                    onClick={() => tauriInvoke("quit_app").catch(() => {})}
-                  >
-                    <Power size={12} /> Quit App
-                  </button>
-                </div>
               </div>
             </section>
           </main>
@@ -1209,7 +1091,7 @@ export function App() {
       ) : currentView === "help" ? (
         <>
           {/* Help Full Page Header */}
-          <header className="wm-page-header" data-tauri-drag-region>
+          <header className="wm-page-header">
             <button
               id="help-back-btn"
               className="wm-back-btn"
@@ -1308,12 +1190,20 @@ export function App() {
                     <span className="wm-badge">Click Card</span>
                   </div>
                   <div className="wm-setting-row">
+                    <span className="wm-setting-title">Search, then copy top match</span>
+                    <span className="wm-badge">Type + Enter</span>
+                  </div>
+                  <div className="wm-setting-row">
+                    <span className="wm-setting-title">Move between accounts</span>
+                    <span className="wm-badge">↑ / ↓</span>
+                  </div>
+                  <div className="wm-setting-row">
                     <span className="wm-setting-title">Account Details & Delete</span>
                     <span className="wm-badge">Right-click / (i)</span>
                   </div>
                   <div className="wm-setting-row">
-                    <span className="wm-setting-title">Quick Access</span>
-                    <span className="wm-badge">Menu Bar / Tray</span>
+                    <span className="wm-setting-title">Quit AuthG</span>
+                    <span className="wm-badge">⌘ + Q</span>
                   </div>
                 </div>
               </div>
@@ -1332,14 +1222,14 @@ export function App() {
                 <div className="wm-help-card">
                   <span style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>Are my 2FA secret keys sent to the cloud?</span>
                   <span style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.4 }}>
-                    No. AuthG works 100% offline. No telemetry, no analytics, no external servers. Secrets are encrypted locally on disk with AES-256-GCM.
+                    No. Secrets stay on your computer, encrypted with AES-256-GCM. No telemetry or analytics. The only network request is the update check, when you click it.
                   </span>
                 </div>
 
                 <div className="wm-help-card">
                   <span style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>What happens if I delete an account in Google Authenticator?</span>
                   <span style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.4 }}>
-                    When re-exporting, enable "Mirror Google Authenticator" in the import dialog. It will synchronize your desktop vault to match your phone's current state.
+                    Nothing changes in AuthG — imports only ever add accounts. Delete it here too from the account's details, or use Wipe All Accounts in Settings and re-import to start fresh.
                   </span>
                 </div>
 
@@ -1368,8 +1258,8 @@ export function App() {
       ) : (
         <>
           {/* Main Vault Header */}
-          <header className="wm-header" data-tauri-drag-region>
-            <div className="wm-title" data-tauri-drag-region>
+          <header className="wm-header">
+            <div className="wm-title">
               <div className="wm-logo-icon">
                 <ShieldCheck size={13} />
               </div>
@@ -1469,15 +1359,17 @@ export function App() {
                 </div>
                 <div>
                   <h4 className="wm-empty-title">
-                    {searchQuery ? "No matching accounts" : "No 2FA accounts yet"}
+                    {vaultError ? "Couldn't open your vault" : searchQuery ? "No matching accounts" : "No 2FA accounts yet"}
                   </h4>
                   <p className="wm-empty-desc">
-                    {searchQuery
+                    {vaultError
+                      ? `${vaultError}. Nothing will be saved until it opens. Restart AuthG and allow Keychain access.`
+                      : searchQuery
                       ? `No accounts found for "${searchQuery}"`
                       : "Import your Google Authenticator export QR code, paste a screenshot with ⌘V, or add a key manually."}
                   </p>
                 </div>
-                {!searchQuery && (
+                {!searchQuery && !vaultError && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 280, marginTop: 4 }}>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                       <button
@@ -1530,12 +1422,7 @@ export function App() {
               filtered.map((acc, index) => {
                 const info = codes[acc.id];
                 const raw = info?.code || "------";
-                const formatted =
-                  raw.length === 6
-                    ? `${raw.slice(0, 3)} ${raw.slice(3)}`
-                    : raw.length === 8
-                    ? `${raw.slice(0, 4)} ${raw.slice(4)}`
-                    : raw;
+                const formatted = formatCode(raw);
 
                 const isCopied = copiedId === acc.id;
                 const isFocused = focusedIndex === index;
@@ -1570,15 +1457,20 @@ export function App() {
                           <span>COPIED</span>
                         </span>
                       ) : (
-                        <span
-                          className={`wm-code ${secondsRemaining <= 5 ? "urgent" : ""}`}
-                          style={{
-                            filter: settings.privacyMode ? "blur(4px)" : "none",
-                            transition: "filter 0.15s ease",
-                          }}
-                        >
-                          {formatted}
-                        </span>
+                        acc.otpType === "HOTP" ? (
+                          <span className="wm-code-next" title="Counter-based (HOTP) codes aren't supported yet">HOTP not supported</span>
+                        ) : (
+                          <span className="wm-code-stack">
+                            <span
+                              className={`wm-code ${secondsRemaining <= 5 ? "urgent" : ""} ${settings.privacyMode ? "private" : ""}`}
+                            >
+                              {formatted}
+                            </span>
+                            {info?.nextCode && !settings.privacyMode && (
+                              <span className="wm-code-next">next {formatCode(info.nextCode)}</span>
+                            )}
+                          </span>
+                        )
                       )}
                       <button
                         id={`details-btn-${acc.id}`}
@@ -1650,7 +1542,7 @@ export function App() {
               {/* Tab 1: Google Authenticator QR */}
               {activeImportTab === "qr" && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <p style={{ fontSize: 11, color: "#71717a", lineHeight: 1.4 }}>
+                  <p style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.4 }}>
                     On your phone: open <strong>Google Authenticator → Transfer accounts → Export</strong>, then upload screenshot, scan with camera, or press <strong>⌘V</strong>:
                   </p>
 
@@ -1691,11 +1583,11 @@ export function App() {
                         }}
                         onDrop={handleDrop}
                       >
-                        <Upload size={20} color={isDraggingFile ? "var(--primary)" : "#a1a1aa"} />
+                        <Upload size={20} color={isDraggingFile ? "var(--primary)" : "var(--muted)"} />
                         <span style={{ fontSize: 12, fontWeight: 500, color: isDraggingFile ? "var(--primary)" : "var(--foreground)" }}>
                           {isDraggingFile ? "Release to import QR code" : "Drop QR screenshot or click to upload"}
                         </span>
-                        <span style={{ fontSize: 10, color: "#71717a" }}>
+                        <span style={{ fontSize: 10, color: "var(--muted)" }}>
                           Tip: You can also press ⌘V anytime to paste
                         </span>
                         <input
@@ -1717,45 +1609,6 @@ export function App() {
                       >
                         <Camera size={13} /> Scan with Camera
                       </button>
-
-                      <div className="wm-setting-row" style={{ padding: "6px 0", borderBottom: "none" }}>
-                        <div className="wm-setting-info">
-                          <span className="wm-setting-title" style={{ fontSize: 11 }}>Mirror Google Authenticator</span>
-                          <span className="wm-setting-desc" style={{ fontSize: 10 }}>Replace vault with this export (prunes accounts you deleted on phone)</span>
-                        </div>
-                        <div
-                          id="toggle-mirror-mode-btn"
-                          className={`wm-toggle ${mirrorGoogleMode ? "active" : ""}`}
-                          onClick={() => setMirrorGoogleMode(!mirrorGoogleMode)}
-                        >
-                          <div className="wm-toggle-thumb" />
-                        </div>
-                      </div>
-
-                      <div className="wm-field" style={{ marginTop: 4 }}>
-                        <label className="wm-label">Or paste otpauth-migration:// URI:</label>
-                        <input
-                          id="migration-paste-input"
-                          type="text"
-                          className="wm-input mono"
-                          placeholder="otpauth-migration://offline?data=..."
-                          value={migrationUriText}
-                          onChange={(e) => setMigrationUriText(e.target.value)}
-                        />
-                        <button
-                          id="import-pasted-url-btn"
-                          className="wm-btn-primary"
-                          style={{ marginTop: 4 }}
-                          onClick={() => {
-                            if (migrationUriText.trim()) {
-                              handleScannedData(migrationUriText.trim());
-                              setMigrationUriText("");
-                            }
-                          }}
-                        >
-                          Import Data
-                        </button>
-                      </div>
                     </>
                   )}
                 </div>
