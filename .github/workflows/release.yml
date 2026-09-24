@@ -239,6 +239,23 @@ jobs:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
 
+      # A signed-but-unnotarized DMG is rejected by Gatekeeper the moment it's opened, while an
+      # unsigned DMG isn't checked (only the signed app inside is). Re-save it unsigned and swap it in.
+      - name: Replace DMG with unsigned copy
+        if: startsWith(matrix.platform, 'macos')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DMG=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          NAME=$(basename "$DMG")
+          hdiutil convert -quiet "$DMG" -format UDZO -o unsigned.dmg
+          codesign -dv unsigned.dmg 2>&1 | grep -q "not signed at all"
+          REL=${{ needs.create-release.outputs.release_id }}
+          ASSET=$(gh api "repos/${{ github.repository }}/releases/$REL/assets" --paginate --jq ".[] | select(.name==\"$NAME\") | .id")
+          if [ -n "$ASSET" ]; then gh api -X DELETE "repos/${{ github.repository }}/releases/assets/$ASSET"; fi
+          curl -sSf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" \
+            --data-binary @unsigned.dmg "https://uploads.github.com/repos/${{ github.repository }}/releases/$REL/assets?name=$NAME" > /dev/null
+
   publish-release:
     needs: [create-release, build-tauri]
     if: needs.create-release.outputs.should_release == 'true'
