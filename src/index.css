@@ -1,19 +1,22 @@
 @import "tailwindcss";
 
 :root, .theme-dark {
-  --background: #09090b;
-  --foreground: #f4f4f5;
-  --header-bg: #0c0c0e;
-  --card: #121215;
-  --card-hover: #18181c;
-  --popover: #0e0e11;
-  --border: #27272a;
-  --border-subtle: #1e1e24;
-  --muted: #71717a;
-  --muted-foreground: #a1a1aa;
-  --accent: #27272a;
+  --background: rgba(12, 12, 14, 0.38); /* tint over native vibrancy */
+  --on-primary: #1c1c1f;
+  --foreground: #e6e6ea;
+  --header-bg: rgba(255, 255, 255, 0.03);
+  --card: rgba(255, 255, 255, 0.05);
+  --card-hover: rgba(255, 255, 255, 0.09);
+  --popover: rgba(28, 28, 32, 0.94);
+  --border: rgba(255, 255, 255, 0.10);
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --muted: #8e8e98;
+  --muted-foreground: #b4b4bc;
+  --accent: rgba(255, 255, 255, 0.08);
   --primary: #f4f4f5; /* Pure Monochrome */
-  --primary-emerald: #10b981;
+  --primary-emerald: #34d399;
+  --warning: #fbbf24;
+  --overlay: rgba(0, 0, 0, 0.45);
   --shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.95);
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", Menlo, monospace;
@@ -31,50 +34,36 @@
 }
 
 .theme-light {
-  --background: #ffffff;
-  --foreground: #09090b;
-  --header-bg: #f8fafc;
-  --card: #ffffff;
-  --card-hover: #f1f5f9;
-  --popover: #ffffff;
-  --border: #e2e8f0;
-  --border-subtle: #edf2f7;
+  --background: rgba(255, 255, 255, 0.42);
+  --on-primary: #ffffff;
+  --foreground: #1d1d1f;
+  --header-bg: rgba(255, 255, 255, 0.30);
+  --card: rgba(255, 255, 255, 0.55);
+  --card-hover: rgba(255, 255, 255, 0.78);
+  --popover: rgba(255, 255, 255, 0.95);
+  --border: rgba(0, 0, 0, 0.09);
+  --border-subtle: rgba(0, 0, 0, 0.05);
   --muted: #64748b;
   --muted-foreground: #475569;
-  --accent: #f1f5f9;
-  --primary: #09090b; /* Pure Monochrome */
-  --primary-emerald: #10b981;
+  --accent: rgba(0, 0, 0, 0.05);
+  --primary: #1d1d1f; /* Pure Monochrome */
+  --primary-emerald: #059669;
+  --warning: #d97706;
+  --overlay: rgba(0, 0, 0, 0.22);
   --shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.15);
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", Menlo, monospace;
-  --danger-bg: #fff1f2;
-  --danger-border: #fecdd3;
+  --danger-bg: rgba(225, 29, 72, 0.06);
+  --danger-border: rgba(225, 29, 72, 0.18);
   --danger-title: #9f1239;
   --danger-desc: #475569;
-  --danger-btn-bg: #ffffff;
-  --danger-btn-border: #fca5a5;
+  --danger-btn-bg: rgba(225, 29, 72, 0.08);
+  --danger-btn-border: rgba(225, 29, 72, 0.3);
   --danger-btn-color: #e11d48;
   --danger-btn-hover-bg: #e11d48;
   --danger-btn-hover-border: #be123c;
   --danger-btn-hover-color: #ffffff;
   --heart-color: #e11d48;
-}
-
-/* Dynamic Monochrome Accents */
-[data-accent="monochrome"] {
-  --primary: var(--foreground);
-}
-[data-accent="graphite"] {
-  --primary: #71717a;
-}
-[data-accent="slate"] {
-  --primary: #64748b;
-}
-[data-accent="titanium"] {
-  --primary: #a1a1aa;
-}
-[data-accent="onyx"] {
-  --primary: #3f3f46;
 }
 
 * {
@@ -126,7 +115,6 @@ body {
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
-  box-shadow: var(--shadow);
   transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
@@ -135,9 +123,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
-  background: var(--header-bg);
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 10px 14px 4px;
+  background: transparent;
   -webkit-app-region: drag;
   user-select: none;
 }
@@ -156,8 +143,8 @@ body {
   width: 20px;
   height: 20px;
   border-radius: 5px;
-  background: var(--foreground);
-  color: var(--background);
+  background: var(--accent);
+  color: var(--foreground);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -190,15 +177,15 @@ body {
 }
 
 .wm-btn-icon.active {
-  background: rgba(244, 63, 94, 0.12);
-  color: var(--primary);
-  border-color: var(--primary);
+  background: var(--accent);
+  color: var(--foreground);
+  border-color: var(--border);
 }
 
 /* Search bar */
 .wm-search-wrapper {
   padding: 10px 14px;
-  background: var(--background);
+  background: transparent;
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
@@ -221,8 +208,8 @@ body {
 
 .wm-search-input {
   width: 100%;
-  background: var(--card);
-  border: 1px solid var(--border);
+  background: var(--accent);
+  border: 1px solid transparent;
   border-radius: 8px;
   padding: 7px 10px 7px 32px;
   color: var(--foreground);
@@ -232,8 +219,7 @@ body {
 }
 
 .wm-search-input:focus {
-  border-color: var(--primary);
-  box-shadow: 0 0 0 1px var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 25%, transparent);
 }
 
 .wm-search-input::placeholder {
@@ -248,7 +234,7 @@ body {
   padding: 6px 14px;
   font-size: 11px;
   color: var(--muted);
-  background: var(--header-bg);
+  background: transparent;
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -277,7 +263,7 @@ body {
 }
 
 .wm-dot.warning {
-  background-color: #f59e0b;
+  background-color: var(--warning);
 }
 
 .wm-dot.urgent {
@@ -318,13 +304,12 @@ body {
 .wm-card:hover,
 .wm-card.focused {
   background: var(--card-hover);
-  border-color: var(--primary);
-  box-shadow: 0 0 0 1px var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 40%, transparent);
 }
 
 .wm-card.copied {
-  border-color: var(--primary-emerald);
-  background: rgba(16, 185, 129, 0.06);
+  border-color: var(--border);
+  background: var(--card-hover);
 }
 
 .wm-card-left {
@@ -379,6 +364,31 @@ body {
   color: var(--primary);
 }
 
+/* Privacy Mode: blurred until the card is hovered or keyboard-selected */
+.wm-code.private {
+  filter: blur(4px);
+  transition: filter 0.15s ease;
+}
+
+.wm-card:hover .wm-code.private,
+.wm-card.focused .wm-code.private {
+  filter: none;
+}
+
+.wm-code-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.15;
+}
+
+.wm-code-next {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.4px;
+}
+
 .wm-code-copied {
   display: inline-flex;
   align-items: center;
@@ -387,10 +397,10 @@ body {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.8px;
-  color: var(--primary-emerald);
+  color: var(--foreground);
   padding: 2px 6px;
   border-radius: 5px;
-  background: rgba(16, 185, 129, 0.12);
+  background: var(--accent);
   animation: wm-pop 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -433,9 +443,9 @@ body {
 }
 
 .wm-copy-btn.copied {
-  background: rgba(16, 185, 129, 0.15);
-  color: var(--primary-emerald);
-  border-color: rgba(16, 185, 129, 0.4);
+  background: var(--accent);
+  color: var(--foreground);
+  border-color: var(--border);
 }
 
 .wm-delete-btn {
@@ -500,7 +510,7 @@ body {
 /* Buttons */
 .wm-btn-primary {
   background: var(--foreground);
-  color: var(--background);
+  color: var(--on-primary);
   border: 1px solid transparent;
   border-radius: 6px;
   padding: 8px 14px;
@@ -542,7 +552,7 @@ body {
 .wm-modal-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.65);
+  background: var(--overlay);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -630,12 +640,13 @@ body {
   text-align: center;
 }
 
-.wm-dropzone:hover,
-.wm-dropzone.dragging {
-  border-color: var(--primary);
+.wm-dropzone:hover {
   background: var(--card-hover);
-  transform: scale(1.01);
-  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.wm-dropzone.dragging {
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+  background: var(--card-hover);
 }
 
 .wm-field {
@@ -662,7 +673,7 @@ body {
 }
 
 .wm-input:focus {
-  border-color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 35%, transparent);
 }
 
 .wm-input.mono {
@@ -754,29 +765,6 @@ body {
 }
 
 /* Color Palette Swatches */
-.wm-color-swatches {
-  display: flex;
-  gap: 8px;
-  margin-top: 4px;
-}
-
-.wm-swatch {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  cursor: pointer;
-  border: 2px solid transparent;
-  transition: transform 0.12s ease, border-color 0.12s ease;
-}
-
-.wm-swatch:hover {
-  transform: scale(1.15);
-}
-
-.wm-swatch.active {
-  border-color: var(--foreground);
-}
-
 /* Help Guide Styles */
 .wm-help-card {
   background: var(--card);
@@ -904,7 +892,7 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  background: var(--header-bg);
+  background: transparent;
   border-bottom: 1px solid var(--border-subtle);
   -webkit-app-region: drag;
   user-select: none;

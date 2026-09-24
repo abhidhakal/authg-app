@@ -9,6 +9,7 @@ export interface OtpAccount {
   digits: number;
   period: number;
   otpType: 'TOTP' | 'HOTP';
+  lastUsed?: number; // ms timestamp of last copy, for recently-used ordering
 }
 
 export interface CodeInfo {
@@ -16,6 +17,7 @@ export interface CodeInfo {
   secondsRemaining: number;
   period: number;
   progressPercent: number;
+  nextCode?: string; // only near the end of a period
 }
 
 // RFC 4648 Base32 alphabet
@@ -74,10 +76,10 @@ export async function computeTotp(
   secretBase32: string,
   algorithm: 'SHA1' | 'SHA256' | 'SHA512' = 'SHA1',
   digits: number = 6,
-  period: number = 30
+  period: number = 30,
+  nowSec: number = Math.floor(Date.now() / 1000)
 ): Promise<CodeInfo> {
   const keyBytes = base32ToBytes(secretBase32);
-  const nowSec = Math.floor(Date.now() / 1000);
   const counter = Math.floor(nowSec / period);
 
   const counterBytes = new Uint8Array(8);

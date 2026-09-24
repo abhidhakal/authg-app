@@ -114,10 +114,9 @@ jobs:
               "Get-FileHash <filename> -Algorithm SHA256",
               "```",
               "",
-              "### Security Architecture",
-              "- Zero Network Telemetry: Completely offline without telemetry, cloud syncing, or background pings.",
-              "- Strong Encryption: AES-256-GCM authenticated encryption with Argon2id key derivation and secure salt.",
-              "- Memory Protection: Decrypted secrets are wiped immediately on drop (zeroize protection)."
+              "### Security",
+              "- No telemetry or cloud sync. The only network request is the update check.",
+              "- Vault encrypted with AES-256-GCM. On macOS and Windows the key is kept in the system keystore. Details: https://authg.abhinavdhakal.com/security"
             ].join("\n");
 
             let release;
@@ -215,6 +214,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          # Self-signed macOS cert: keeps the Keychain "Always Allow" valid across updates
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         with:
           projectPath: ./
           releaseId: ${{ needs.create-release.outputs.release_id }}

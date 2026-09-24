@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager,
+    Emitter, Manager,
 };
 use tauri_plugin_updater::UpdaterExt;
 use totp::{generate_totp, OtpCodeResult};
@@ -32,7 +32,6 @@ pub struct AccountWithCode {
 
 pub struct MenuAppState {
     pub last_blur: Mutex<Option<Instant>>,
-    pub close_on_blur: AtomicBool,
     pub prevent_close: AtomicBool,
 }
 
@@ -40,7 +39,6 @@ impl Default for MenuAppState {
     fn default() -> Self {
         Self {
             last_blur: Mutex::new(None),
-            close_on_blur: AtomicBool::new(true),
             prevent_close: AtomicBool::new(false),
         }
     }
@@ -101,20 +99,86 @@ fn get_all_codes(accounts: Vec<OtpAccount>) -> Result<Vec<AccountWithCode>, Stri
     Ok(results)
 }
 
-#[tauri::command]
-fn save_accounts_vault(
-    app: tauri::AppHandle,
-    pin: Option<String>,
-    accounts: Vec<OtpAccount>,
-) -> Result<(), String> {
-    let path = get_vault_path(&app)?;
-    vault::save_vault_to_path(&path, pin.as_deref().unwrap_or(""), &accounts)
+const KEYSTORE_SERVICE: &str = "com.authg.desktop";
+const KEYSTORE_ACCOUNT: &str = "vault-key";
+
+/// Reads the vault key from the macOS Keychain. Ok(None) = no item yet.
+#[cfg(target_os = "macos")]
+fn keystore_get() -> Result<Option<Vec<u8>>, String> {
+    const ERR_NOT_FOUND: i32 = -25300; // errSecItemNotFound
+    match security_framework::passwords::get_generic_password(KEYSTORE_SERVICE, KEYSTORE_ACCOUNT) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.code() == ERR_NOT_FOUND => Ok(None),
+        Err(e) => Err(format!("Could not read vault key from Keychain: {}", e)),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn keystore_set(key: &[u8]) -> Result<(), String> {
+    security_framework::passwords::set_generic_password(KEYSTORE_SERVICE, KEYSTORE_ACCOUNT, key)
+        .map_err(|e| format!("Could not save vault key to Keychain: {}", e))
+}
+
+/// Reads the vault key from Windows Credential Manager. Ok(None) = no item yet.
+#[cfg(windows)]
+fn keystore_get() -> Result<Option<Vec<u8>>, String> {
+    let entry = keyring::Entry::new(KEYSTORE_SERVICE, KEYSTORE_ACCOUNT).map_err(|e| e.to_string())?;
+    match entry.get_secret() {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("Could not read vault key from Credential Manager: {}", e)),
+    }
+}
+
+#[cfg(windows)]
+fn keystore_set(key: &[u8]) -> Result<(), String> {
+    keyring::Entry::new(KEYSTORE_SERVICE, KEYSTORE_ACCOUNT)
+        .and_then(|e| e.set_secret(key))
+        .map_err(|e| format!("Could not save vault key to Credential Manager: {}", e))
+}
+
+/// The vault's AES key, kept in the OS keystore. Created on first use, but never when an
+/// AUG3 vault already exists: a fresh key could not open it, so that must surface as an error.
+#[cfg(any(target_os = "macos", windows))]
+fn vault_key(path: &PathBuf) -> Result<Option<[u8; 32]>, String> {
+    match keystore_get()? {
+        Some(bytes) => <[u8; 32]>::try_from(bytes.as_slice())
+            .map(Some)
+            .map_err(|_| "Stored vault key has the wrong length".to_string()),
+        None if vault::is_keychain_vault(path) => {
+            Err("Vault key is missing from the system keystore, so the vault can't be opened".to_string())
+        }
+        None => {
+            use rand::RngCore;
+            let mut key = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut key);
+            keystore_set(&key)?;
+            Ok(Some(key))
+        }
+    }
+}
+
+// ponytail: Linux keeps the old PIN-derived format; Secret Service isn't always running there.
+// Add a keystore once there's a way to test it on real distros.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn vault_key(_path: &PathBuf) -> Result<Option<[u8; 32]>, String> {
+    Ok(None)
 }
 
 #[tauri::command]
-fn load_accounts_vault(app: tauri::AppHandle, pin: Option<String>) -> Result<Vec<OtpAccount>, String> {
+fn save_accounts_vault(app: tauri::AppHandle, accounts: Vec<OtpAccount>) -> Result<(), String> {
     let path = get_vault_path(&app)?;
-    vault::load_vault_from_path(&path, pin.as_deref().unwrap_or(""))
+    match vault_key(&path)? {
+        Some(key) => vault::save_vault_v3(&path, &key, &accounts),
+        None => vault::save_vault_to_path(&path, "", &accounts),
+    }
+}
+
+#[tauri::command]
+fn load_accounts_vault(app: tauri::AppHandle) -> Result<Vec<OtpAccount>, String> {
+    let path = get_vault_path(&app)?;
+    let key = vault_key(&path)?;
+    vault::load_vault(&path, key.as_ref(), "")
 }
 
 #[tauri::command]
@@ -125,10 +189,18 @@ fn check_vault_exists(app: tauri::AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    hide_popup(&app);
+    Ok(())
+}
+
+/// Hide like a native menu bar popover: tell the page, and hand focus back to the previous app.
+fn hide_popup(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
+        let _ = window.emit("popup-hidden", ());
     }
-    Ok(())
+    #[cfg(target_os = "macos")]
+    let _ = app.hide();
 }
 
 #[allow(unexpected_cfgs)]
@@ -137,6 +209,11 @@ fn open_or_focus_main_window(app: &tauri::AppHandle) {
         if let Some(state) = app.try_state::<MenuAppState>() {
             *state.last_blur.lock().unwrap() = None;
         }
+        if let Some(Ok(Some(rect))) = app.tray_by_id("main").map(|t| t.rect()) {
+            position_under_tray(&window, rect);
+        }
+        #[cfg(target_os = "macos")]
+        let _ = app.show();
         if window.is_minimized().unwrap_or(false) {
             let _ = window.unminimize();
         }
@@ -158,6 +235,50 @@ fn open_or_focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn position_under_tray(window: &tauri::WebviewWindow, rect: tauri::Rect) {
+    let icon_pos = rect.position.to_physical::<f64>(1.0);
+    let icon_size = rect.size.to_physical::<f64>(1.0);
+    if icon_size.width <= 0.0 {
+        return; // tray not laid out yet (e.g. right at launch)
+    }
+    let Ok(win) = window.outer_size() else { return };
+    let mut x = icon_pos.x + icon_size.width / 2.0 - win.width as f64 / 2.0;
+    let y = icon_pos.y + icon_size.height + 4.0;
+    // Keep the window on the icon's monitor when the icon sits near a screen edge.
+    if let Ok(Some(m)) = window.monitor_from_point(icon_pos.x, icon_pos.y) {
+        let left = m.position().x as f64;
+        let right = left + m.size().width as f64 - win.width as f64;
+        x = x.clamp(left, right.max(left));
+    }
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
+fn toggle_popup(app: &tauri::AppHandle) {
+    let visible = app
+        .get_webview_window("main")
+        .is_some_and(|w| w.is_visible().unwrap_or(false));
+    if visible {
+        hide_popup(app);
+    } else {
+        open_or_focus_main_window(app);
+    }
+}
+
+/// Follow the user across Spaces and appear over full-screen apps, like native menu bar popovers.
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+fn set_popup_collection_behavior(window: &tauri::WebviewWindow) {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+    const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
+    const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
+    if let Ok(ns_window) = window.ns_window() {
+        unsafe {
+            let _: () = msg_send![ns_window as *mut Object, setCollectionBehavior: CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY];
+        }
+    }
+}
+
 #[tauri::command]
 fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
     open_or_focus_main_window(&app);
@@ -165,42 +286,9 @@ fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_close_on_blur(app: tauri::AppHandle, enable: bool) -> Result<(), String> {
-    if let Some(state) = app.try_state::<MenuAppState>() {
-        state.close_on_blur.store(enable, Ordering::SeqCst);
-    }
-    Ok(())
-}
-
-#[tauri::command]
 fn set_prevent_close_on_blur(app: tauri::AppHandle, prevent: bool) -> Result<(), String> {
     if let Some(state) = app.try_state::<MenuAppState>() {
         state.prevent_close.store(prevent, Ordering::SeqCst);
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn set_show_in_dock(app: tauri::AppHandle, show: bool) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        use tauri::ActivationPolicy;
-        let policy = if show {
-            ActivationPolicy::Regular
-        } else {
-            ActivationPolicy::Accessory
-        };
-        let _ = app.set_activation_policy(policy);
-    }
-    let _ = app;
-    let _ = show;
-    Ok(())
-}
-
-#[tauri::command]
-fn set_always_on_top(app: tauri::AppHandle, always_on_top: bool) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_always_on_top(always_on_top);
     }
     Ok(())
 }
@@ -449,10 +537,8 @@ pub fn run() {
                 if let Some(state) = app.try_state::<MenuAppState>() {
                     if !focused {
                         *state.last_blur.lock().unwrap() = Some(Instant::now());
-                        if state.close_on_blur.load(Ordering::SeqCst)
-                            && !state.prevent_close.load(Ordering::SeqCst)
-                        {
-                            let _ = window.hide();
+                        if !state.prevent_close.load(Ordering::SeqCst) {
+                            hide_popup(app);
                         }
                     } else {
                         state.prevent_close.store(false, Ordering::SeqCst);
@@ -461,6 +547,10 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Menu bar only: no Dock icon, no Cmd-Tab entry.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             // Enable auto-launch at login by default if not set
             let autolaunch = app.autolaunch();
             if !autolaunch.is_enabled().unwrap_or(false) {
@@ -478,14 +568,14 @@ pub fn run() {
 
             if let Some(icon) = tray_icon {
                 #[allow(unused_mut)]
-                let mut builder = TrayIconBuilder::new()
+                let mut builder = TrayIconBuilder::with_id("main")
                     .icon(icon)
                     .icon_as_template(true)
                     .tooltip("AuthG - Google Authenticator for Desktop")
                     .show_menu_on_left_click(false);
 
-                // On non-macOS platforms (e.g. Windows/Linux), attaching the menu directly
-                // works as expected because the OS distinguishes left/right clicks without AppKit interference.
+                // On macOS an attached status-item menu opens on *every* click (AppKit handles it
+                // before we see the event), so there we pop it up ourselves on right-click instead.
                 #[cfg(not(target_os = "macos"))]
                 {
                     builder = builder.menu(&tray_menu);
@@ -493,49 +583,51 @@ pub fn run() {
 
                 let menu_for_tray = tray_menu.clone();
                 let _ = builder
-                    .on_menu_event(|app, event| {
-                        match event.id.as_ref() {
-                            "quit" => {
-                                app.exit(0);
-                            }
-                            "toggle" => {
-                                if let Some(window) = app.get_webview_window("main") {
-                                    if window.is_visible().unwrap_or(false) {
-                                        let _ = window.hide();
-                                    } else {
-                                        open_or_focus_main_window(app);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "quit" => app.exit(0),
+                        "toggle" => toggle_popup(app),
+                        _ => {}
                     })
-                    .on_tray_icon_event(move |tray, event| {
-                        match event {
-                            TrayIconEvent::Click {
-                                button: MouseButton::Left,
-                                button_state: MouseButtonState::Up,
-                                ..
-                            } => {
-                                open_or_focus_main_window(tray.app_handle());
+                    .on_tray_icon_event(move |tray, event| match event {
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } => {
+                            let app = tray.app_handle();
+                            // This same click may have just blurred (and hidden) the window; don't reopen it.
+                            let just_hidden = app
+                                .try_state::<MenuAppState>()
+                                .and_then(|s| *s.last_blur.lock().unwrap())
+                                .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
+                            if !just_hidden {
+                                toggle_popup(app);
                             }
-                            TrayIconEvent::Click {
-                                button: MouseButton::Right,
-                                button_state: MouseButtonState::Up,
-                                ..
-                            } => {
-                                #[cfg(target_os = "macos")]
-                                {
-                                    let app = tray.app_handle();
-                                    if let Some(window) = app.get_webview_window("main") {
-                                        let _ = window.popup_menu(&menu_for_tray);
-                                    }
-                                }
-                            }
-                            _ => {}
                         }
+                        #[cfg(target_os = "macos")]
+                        TrayIconEvent::Click {
+                            button: MouseButton::Right,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } => {
+                            // No position = at the cursor in screen coords, so the (hidden) window's location doesn't matter.
+                            if let Some(window) = tray.app_handle().get_webview_window("main") {
+                                let _ = window.popup_menu(&menu_for_tray);
+                            }
+                        }
+                        _ => {}
                     })
                     .build(app);
+            }
+
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                set_popup_collection_behavior(&window);
+            }
+
+            // Launched at login: stay in the menu bar. Launched by hand: show where it lives.
+            if !std::env::args().any(|a| a == "--autostart") {
+                open_or_focus_main_window(app.handle());
             }
             Ok(())
         })
@@ -548,10 +640,7 @@ pub fn run() {
             check_vault_exists,
             hide_main_window,
             show_main_window,
-            set_close_on_blur,
             set_prevent_close_on_blur,
-            set_show_in_dock,
-            set_always_on_top,
             wipe_vault,
             read_image_base64,
             set_open_at_login,
@@ -562,6 +651,14 @@ pub fn run() {
             check_app_update,
             install_app_update,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            // Dock icon click / relaunching from Finder while already running.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                open_or_focus_main_window(app);
+            }
+            let _ = (app, event);
+        });
 }

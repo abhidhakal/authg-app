@@ -13,7 +13,12 @@ pub struct OtpAccount {
     pub algorithm: String,
     pub digits: u32,
     pub period: u64,
+    // The webview sends camelCase; without this every vault save failed with "missing field `otp_type`".
+    #[serde(rename = "otpType", alias = "otp_type")]
     pub otp_type: String, // "TOTP" or "HOTP"
+    /// Unix ms of the last copy, for "recently used first". Lives in the encrypted vault, not localStorage.
+    #[serde(default, rename = "lastUsed", skip_serializing_if = "Option::is_none")]
+    pub last_used: Option<u64>,
 }
 
 // Protobuf wire reader helper
@@ -193,6 +198,7 @@ fn parse_otp_parameter(bytes: &[u8]) -> Result<OtpAccount, String> {
         digits,
         period: 30,
         otp_type,
+        last_used: None,
     })
 }
 
@@ -267,3 +273,4 @@ mod tests {
         assert!(!acc.secret.is_empty());
     }
 }
+

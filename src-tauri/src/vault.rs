@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crate::migration::OtpAccount;
 
 pub const VAULT_MAGIC_V2: &[u8; 4] = b"AUG2";
+pub const VAULT_MAGIC_V3: &[u8; 4] = b"AUG3";
 pub const SALT_LEN: usize = 16;
 pub const NONCE_LEN: usize = 12;
 pub const PBKDF2_ROUNDS: u32 = 600_000;
@@ -31,13 +32,70 @@ fn derive_legacy_key(pin: &str, salt: &[u8]) -> [u8; 32] {
     key
 }
 
-/// Saves accounts into a cryptographically secured envelope on disk:
-/// [AUG2: 4 bytes] + [Salt: 16 bytes] + [Nonce: 12 bytes] + [AES-256-GCM Ciphertext + Tag]
-pub fn save_vault_to_path(path: &PathBuf, pin: &str, accounts: &[OtpAccount]) -> Result<(), String> {
+fn write_private(path: &PathBuf, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create vault dir: {}", e))?;
     }
+    fs::write(path, bytes).map_err(|e| format!("Failed to write vault file: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
 
+/// Returns true when the file on disk is an AUG3 vault, i.e. only readable with the Keychain key.
+pub fn is_keychain_vault(path: &PathBuf) -> bool {
+    fs::read(path).map(|d| d.starts_with(VAULT_MAGIC_V3)).unwrap_or(false)
+}
+
+/// AUG3: [AUG3: 4 bytes] + [Nonce: 12 bytes] + [AES-256-GCM Ciphertext + Tag].
+/// The key is a random 256-bit key held in the OS keychain, so the file alone is useless.
+pub fn save_vault_v3(path: &PathBuf, key: &[u8; 32], accounts: &[OtpAccount]) -> Result<(), String> {
+    let json_data = serde_json::to_vec(accounts).map_err(|e| e.to_string())?;
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce_bytes), json_data.as_ref())
+        .map_err(|e| format!("Encryption failure: {}", e))?;
+
+    let mut payload = Vec::with_capacity(4 + NONCE_LEN + ciphertext.len());
+    payload.extend_from_slice(VAULT_MAGIC_V3);
+    payload.extend_from_slice(&nonce_bytes);
+    payload.extend_from_slice(&ciphertext);
+    write_private(path, &payload)
+}
+
+/// Loads any vault version. AUG3 needs `key`; older (PIN-derived) vaults are re-saved as AUG3 when a key is given.
+pub fn load_vault(path: &PathBuf, key: Option<&[u8; 32]>, pin: &str) -> Result<Vec<OtpAccount>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read(path).map_err(|e| format!("Failed to read vault file: {}", e))?;
+    if data.starts_with(VAULT_MAGIC_V3) {
+        let key = key.ok_or("Vault is locked to the Keychain, but no Keychain key is available")?;
+        if data.len() < 4 + NONCE_LEN + 16 {
+            return Err("Corrupted vault file (incomplete envelope)".to_string());
+        }
+        let (nonce_bytes, ciphertext) = data[4..].split_at(NONCE_LEN);
+        let decrypted = Aes256Gcm::new_from_slice(key)
+            .map_err(|e| e.to_string())?
+            .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+            .map_err(|_| "Could not decrypt vault with the Keychain key".to_string())?;
+        return serde_json::from_slice(&decrypted).map_err(|e| format!("Vault deserialization error: {}", e));
+    }
+    let accounts = load_vault_from_path(path, pin)?;
+    if let Some(key) = key {
+        save_vault_v3(path, key, &accounts)?;
+    }
+    Ok(accounts)
+}
+
+/// Saves accounts into a cryptographically secured envelope on disk:
+/// [AUG2: 4 bytes] + [Salt: 16 bytes] + [Nonce: 12 bytes] + [AES-256-GCM Ciphertext + Tag]
+pub fn save_vault_to_path(path: &PathBuf, pin: &str, accounts: &[OtpAccount]) -> Result<(), String> {
     let json_data = serde_json::to_vec(accounts).map_err(|e| e.to_string())?;
 
     let mut salt = [0u8; SALT_LEN];
@@ -60,16 +118,7 @@ pub fn save_vault_to_path(path: &PathBuf, pin: &str, accounts: &[OtpAccount]) ->
     final_payload.extend_from_slice(&nonce_bytes);
     final_payload.extend_from_slice(&ciphertext);
 
-    fs::write(path, final_payload).map_err(|e| format!("Failed to write vault file: {}", e))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        let _ = std::fs::set_permissions(path, perms);
-    }
-
-    Ok(())
+    write_private(path, &final_payload)
 }
 
 /// Loads and decrypts accounts from the vault envelope.
@@ -159,6 +208,7 @@ mod tests {
             digits: 6,
             period: 30,
             otp_type: "TOTP".to_string(),
+            last_used: None,
         }];
 
         save_vault_to_path(&path, "1234", &sample_accounts).unwrap();
@@ -177,6 +227,33 @@ mod tests {
     }
 
     #[test]
+    fn test_vault_v3_keychain_key() {
+        let mut path = temp_dir();
+        path.push("test_vault_authg_v3.enc");
+        let key = [7u8; 32];
+        let js: Vec<OtpAccount> = serde_json::from_str(
+            r#"[{"id":"a","name":"n","issuer":"GitHub","secret":"JBSWY3DPEHPK3PXP","algorithm":"SHA1","digits":6,"period":30,"otpType":"TOTP","lastUsed":5}]"#,
+        )
+        .expect("webview camelCase shape must deserialize");
+
+        // An old AUG2 (empty PIN) vault upgrades to AUG3 on load
+        save_vault_to_path(&path, "", &js).unwrap();
+        let loaded = load_vault(&path, Some(&key), "").unwrap();
+        assert_eq!(loaded[0].last_used, Some(5));
+        assert!(fs::read(&path).unwrap().starts_with(VAULT_MAGIC_V3));
+        assert!(is_keychain_vault(&path));
+
+        // AUG3 reads back with the key, and refuses without it or with the wrong one
+        assert_eq!(load_vault(&path, Some(&key), "").unwrap()[0].issuer, "GitHub");
+        assert!(load_vault(&path, None, "").is_err());
+        assert!(load_vault(&path, Some(&[8u8; 32]), "").is_err());
+
+        // Serializes back as camelCase for the webview
+        assert!(serde_json::to_string(&loaded).unwrap().contains("\"otpType\""));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn test_legacy_vault_migration() {
         let mut path = temp_dir();
         path.push("test_vault_legacy_migration.enc");
@@ -190,6 +267,7 @@ mod tests {
             digits: 6,
             period: 30,
             otp_type: "TOTP".to_string(),
+            last_used: None,
         }];
 
         // Create a simulated legacy v1 file

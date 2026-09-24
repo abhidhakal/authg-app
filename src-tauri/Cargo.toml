@@ -1,6 +1,6 @@
 [package]
 name = "authg"
-version = "1.0.6"
+version = "1.1.0"
 description = "AuthG - Minimal Native Desktop Authenticator for Google Authenticator"
 authors = ["Abhinav Dhakal"]
 edition = "2021"
@@ -35,6 +35,10 @@ pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
+security-framework = "3"
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
