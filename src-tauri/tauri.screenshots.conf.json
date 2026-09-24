@@ -1,0 +1,25 @@
+{
+  "identifier": "com.authg.screenshots",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "AuthG",
+        "width": 410,
+        "height": 620,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
+        "alwaysOnTop": false,
+        "visible": false,
+        "contentProtected": false,
+        "windowEffects": {
+          "effects": ["popover"],
+          "state": "active",
+          "radius": 12
+        }
+      }
+    ]
+  }
+}
