@@ -71,7 +71,7 @@ interface AppSettings {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  openAtLogin: true,
+  openAtLogin: false,
   privacyMode: false,
   clipboardTimeoutSec: 30,
   theme: "system",

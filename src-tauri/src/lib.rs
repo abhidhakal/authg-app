@@ -49,7 +49,8 @@ fn get_vault_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    Ok(base.join("vault.enc"))
+    // Dev builds never touch the real vault (or its keystore entry, see vault_key)
+    Ok(base.join(if cfg!(debug_assertions) { "vault-dev.enc" } else { "vault.enc" }))
 }
 
 #[tauri::command]
@@ -99,14 +100,13 @@ fn get_all_codes(accounts: Vec<OtpAccount>) -> Result<Vec<AccountWithCode>, Stri
     Ok(results)
 }
 
-const KEYSTORE_SERVICE: &str = "com.authg.desktop";
 const KEYSTORE_ACCOUNT: &str = "vault-key";
 
 /// Reads the vault key from the macOS Keychain. Ok(None) = no item yet.
 #[cfg(target_os = "macos")]
-fn keystore_get() -> Result<Option<Vec<u8>>, String> {
+fn keystore_get(service: &str) -> Result<Option<Vec<u8>>, String> {
     const ERR_NOT_FOUND: i32 = -25300; // errSecItemNotFound
-    match security_framework::passwords::get_generic_password(KEYSTORE_SERVICE, KEYSTORE_ACCOUNT) {
+    match security_framework::passwords::get_generic_password(service, KEYSTORE_ACCOUNT) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if e.code() == ERR_NOT_FOUND => Ok(None),
         Err(e) => Err(format!("Could not read vault key from Keychain: {}", e)),
@@ -114,15 +114,15 @@ fn keystore_get() -> Result<Option<Vec<u8>>, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn keystore_set(key: &[u8]) -> Result<(), String> {
-    security_framework::passwords::set_generic_password(KEYSTORE_SERVICE, KEYSTORE_ACCOUNT, key)
+fn keystore_set(service: &str, key: &[u8]) -> Result<(), String> {
+    security_framework::passwords::set_generic_password(service, KEYSTORE_ACCOUNT, key)
         .map_err(|e| format!("Could not save vault key to Keychain: {}", e))
 }
 
 /// Reads the vault key from Windows Credential Manager. Ok(None) = no item yet.
 #[cfg(windows)]
-fn keystore_get() -> Result<Option<Vec<u8>>, String> {
-    let entry = keyring::Entry::new(KEYSTORE_SERVICE, KEYSTORE_ACCOUNT).map_err(|e| e.to_string())?;
+fn keystore_get(service: &str) -> Result<Option<Vec<u8>>, String> {
+    let entry = keyring::Entry::new(service, KEYSTORE_ACCOUNT).map_err(|e| e.to_string())?;
     match entry.get_secret() {
         Ok(bytes) => Ok(Some(bytes)),
         Err(keyring::Error::NoEntry) => Ok(None),
@@ -131,53 +131,69 @@ fn keystore_get() -> Result<Option<Vec<u8>>, String> {
 }
 
 #[cfg(windows)]
-fn keystore_set(key: &[u8]) -> Result<(), String> {
-    keyring::Entry::new(KEYSTORE_SERVICE, KEYSTORE_ACCOUNT)
+fn keystore_set(service: &str, key: &[u8]) -> Result<(), String> {
+    keyring::Entry::new(service, KEYSTORE_ACCOUNT)
         .and_then(|e| e.set_secret(key))
         .map_err(|e| format!("Could not save vault key to Credential Manager: {}", e))
 }
 
 /// The vault's AES key, kept in the OS keystore. Created on first use, but never when an
 /// AUG3 vault already exists: a fresh key could not open it, so that must surface as an error.
+/// The keystore entry is named after the app identifier (+ ".dev" in debug builds), so dev and
+/// screenshot builds never touch the real app's key. Read once per launch, then cached: every
+/// keystore read can show an OS permission prompt, so it must not happen on every save.
 #[cfg(any(target_os = "macos", windows))]
-fn vault_key(path: &PathBuf) -> Result<Option<[u8; 32]>, String> {
-    match keystore_get()? {
+fn vault_key(app: &tauri::AppHandle, path: &PathBuf) -> Result<Option<[u8; 32]>, String> {
+    static CACHE: Mutex<Option<[u8; 32]>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    if let Some(key) = *cache {
+        return Ok(Some(key));
+    }
+    let service = format!("{}{}", app.config().identifier, if cfg!(debug_assertions) { ".dev" } else { "" });
+    let key = match keystore_get(&service)? {
         Some(bytes) => <[u8; 32]>::try_from(bytes.as_slice())
-            .map(Some)
-            .map_err(|_| "Stored vault key has the wrong length".to_string()),
+            .map_err(|_| "Stored vault key has the wrong length".to_string())?,
         None if vault::is_keychain_vault(path) => {
-            Err("Vault key is missing from the system keystore, so the vault can't be opened".to_string())
+            return Err("Vault key is missing from the system keystore, so the vault can't be opened".to_string());
         }
         None => {
             use rand::RngCore;
             let mut key = [0u8; 32];
             rand::thread_rng().fill_bytes(&mut key);
-            keystore_set(&key)?;
-            Ok(Some(key))
+            keystore_set(&service, &key)?;
+            key
         }
-    }
+    };
+    *cache = Some(key);
+    Ok(Some(key))
 }
 
 // ponytail: Linux keeps the old PIN-derived format; Secret Service isn't always running there.
 // Add a keystore once there's a way to test it on real distros.
 #[cfg(not(any(target_os = "macos", windows)))]
-fn vault_key(_path: &PathBuf) -> Result<Option<[u8; 32]>, String> {
+fn vault_key(_app: &tauri::AppHandle, _path: &PathBuf) -> Result<Option<[u8; 32]>, String> {
     Ok(None)
 }
 
+// Vault commands are async so they run off the main thread: a keystore permission prompt
+// blocks the calling thread, and on the main thread that froze the whole app.
+static VAULT_IO: Mutex<()> = Mutex::new(());
+
 #[tauri::command]
-fn save_accounts_vault(app: tauri::AppHandle, accounts: Vec<OtpAccount>) -> Result<(), String> {
+async fn save_accounts_vault(app: tauri::AppHandle, accounts: Vec<OtpAccount>) -> Result<(), String> {
+    let _io = VAULT_IO.lock().unwrap();
     let path = get_vault_path(&app)?;
-    match vault_key(&path)? {
+    match vault_key(&app, &path)? {
         Some(key) => vault::save_vault_v3(&path, &key, &accounts),
         None => vault::save_vault_to_path(&path, "", &accounts),
     }
 }
 
 #[tauri::command]
-fn load_accounts_vault(app: tauri::AppHandle) -> Result<Vec<OtpAccount>, String> {
+async fn load_accounts_vault(app: tauri::AppHandle) -> Result<Vec<OtpAccount>, String> {
+    let _io = VAULT_IO.lock().unwrap();
     let path = get_vault_path(&app)?;
-    let key = vault_key(&path)?;
+    let key = vault_key(&app, &path)?;
     vault::load_vault(&path, key.as_ref(), "")
 }
 
@@ -251,6 +267,12 @@ fn position_under_tray(window: &tauri::WebviewWindow, rect: tauri::Rect) {
         x = x.clamp(left, right.max(left));
     }
     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
+/// `AUTHG_SCREENSHOT=1`: popup opens centred and ignores click-away, for marketing screenshots
+/// (a dev build launched from a terminal can't take focus, so it would hide instantly).
+fn screenshot_mode() -> bool {
+    std::env::var_os("AUTHG_SCREENSHOT").is_some()
 }
 
 fn toggle_popup(app: &tauri::AppHandle) {
@@ -537,7 +559,7 @@ pub fn run() {
                 if let Some(state) = app.try_state::<MenuAppState>() {
                     if !focused {
                         *state.last_blur.lock().unwrap() = Some(Instant::now());
-                        if !state.prevent_close.load(Ordering::SeqCst) {
+                        if !state.prevent_close.load(Ordering::SeqCst) && !screenshot_mode() {
                             hide_popup(app);
                         }
                     } else {
@@ -550,12 +572,6 @@ pub fn run() {
             // Menu bar only: no Dock icon, no Cmd-Tab entry.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
-            // Enable auto-launch at login by default if not set
-            let autolaunch = app.autolaunch();
-            if !autolaunch.is_enabled().unwrap_or(false) {
-                let _ = autolaunch.enable();
-            }
 
             // Build system tray menu & icon
             let toggle_item = MenuItem::with_id(app, "toggle", "Open / Hide AuthG", true, None::<&str>)?;
@@ -628,6 +644,14 @@ pub fn run() {
             // Launched at login: stay in the menu bar. Launched by hand: show where it lives.
             if !std::env::args().any(|a| a == "--autostart") {
                 open_or_focus_main_window(app.handle());
+            }
+            if screenshot_mode() {
+                if let Some(window) = app.get_webview_window("main") {
+                    // A terminal-launched build can't come to the front, so pin it above everything
+                    let _ = window.set_always_on_top(true);
+                    let _ = window.center();
+                    let _ = window.show();
+                }
             }
             Ok(())
         })
