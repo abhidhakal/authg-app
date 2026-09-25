@@ -227,6 +227,9 @@ fn open_or_focus_main_window(app: &tauri::AppHandle) {
         }
         if let Some(Ok(Some(rect))) = app.tray_by_id("main").map(|t| t.rect()) {
             position_under_tray(&window, rect);
+        } else {
+            #[cfg(not(target_os = "macos"))]
+            let _ = window.center();
         }
         #[cfg(target_os = "macos")]
         let _ = app.show();
@@ -397,13 +400,15 @@ fn copy_concealed_totp(code: String, timeout_secs: u64) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = &code;
+        let _ = timeout_secs;
+        return Err("Concealed pasteboard is only supported on macOS".to_string());
     }
 
+    #[cfg(target_os = "macos")]
     if timeout_secs > 0 {
         let code_to_clear = code.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(timeout_secs));
-            #[cfg(target_os = "macos")]
             {
                 use objc::runtime::Object;
                 use objc::{class, msg_send, sel, sel_impl};
