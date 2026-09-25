@@ -59,8 +59,8 @@ jobs:
               releaseExists = false;
             }
 
-            // If triggered by normal commit push to main, and this version is already released, skip
-            if (context.eventName === 'push' && !context.ref.startsWith('refs/tags/') && releaseExists) {
+            // If this version is already released on GitHub, skip
+            if (releaseExists) {
               core.setOutput('should_release', 'false');
               core.info(`Version ${tag} is already released on GitHub. Skipping automatic release.`);
               return;
@@ -268,12 +268,16 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: ${{ needs.create-release.outputs.release_id }},
-              draft: false
-            });
+            try {
+              await github.rest.repos.updateRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: ${{ needs.create-release.outputs.release_id }},
+                draft: false
+              });
+            } catch (err) {
+              core.warning(`Release undraft warning: ${err.message}`);
+            }
 
   trigger-tap-update:
     needs: [create-release, publish-release]
