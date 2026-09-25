@@ -144,9 +144,18 @@ export function App() {
     error?: string;
   }>({ state: "idle" });
 
-  // Apply Theme & Accent Color to root document
+  const isMac = typeof navigator !== "undefined" && /Macintosh|Mac OS X/i.test(navigator.userAgent);
+  const modKey = isMac ? "⌘" : "Ctrl";
+
+  // Apply Platform, Theme & Accent Color to root document
   useEffect(() => {
     const root = document.documentElement;
+    if (!isMac) {
+      root.classList.add("not-mac");
+    } else {
+      root.classList.remove("not-mac");
+    }
+
     const media = window.matchMedia("(prefers-color-scheme: dark)");
 
     const applyTheme = () => {
@@ -173,7 +182,7 @@ export function App() {
     }
     media.addEventListener("change", applyTheme);
     return () => media.removeEventListener("change", applyTheme);
-  }, [settings.theme]);
+  }, [settings.theme, isMac]);
 
   // Sync with native disk vault on boot and safely migrate/purge any legacy plaintext storage
   useEffect(() => {
@@ -243,7 +252,7 @@ export function App() {
               const data = await scanQrFromFile(file);
               if (data) {
                 handleScannedData(data);
-                showToast("Imported QR from clipboard (⌘V)");
+                showToast(`Imported QR from clipboard (${modKey}V)`);
                 return;
               }
             } catch {}
@@ -839,7 +848,7 @@ export function App() {
       {currentView === "settings" ? (
         <>
           {/* Settings Full Page Header */}
-          <header className="wm-page-header">
+          <header className="wm-page-header" data-tauri-drag-region>
             <button
               id="settings-back-btn"
               className="wm-back-btn"
@@ -1091,7 +1100,7 @@ export function App() {
       ) : currentView === "help" ? (
         <>
           {/* Help Full Page Header */}
-          <header className="wm-page-header">
+          <header className="wm-page-header" data-tauri-drag-region>
             <button
               id="help-back-btn"
               className="wm-back-btn"
@@ -1162,7 +1171,7 @@ export function App() {
                   <div className="wm-help-step">
                     <div className="wm-step-num">4</div>
                     <div className="wm-step-content">
-                      <span>Take a screenshot/photo and <strong>press ⌘V anywhere in AuthG</strong>, or click the <strong>+</strong> button in the vault to upload or scan with camera.</span>
+                      <span>Take a screenshot/photo and <strong>press {modKey}V anywhere in AuthG</strong>, or click the <strong>+</strong> button in the vault to upload or scan with camera.</span>
                     </div>
                   </div>
                 </div>
@@ -1175,11 +1184,11 @@ export function App() {
                 <div className="wm-section-card">
                   <div className="wm-setting-row">
                     <span className="wm-setting-title">Focus Search Bar</span>
-                    <span className="wm-badge">⌘ + K</span>
+                    <span className="wm-badge">{modKey} + K</span>
                   </div>
                   <div className="wm-setting-row">
                     <span className="wm-setting-title">Paste QR Screenshot</span>
-                    <span className="wm-badge">⌘ + V</span>
+                    <span className="wm-badge">{modKey} + V</span>
                   </div>
                   <div className="wm-setting-row">
                     <span className="wm-setting-title">Back to Vault / Close Dialog</span>
@@ -1203,7 +1212,7 @@ export function App() {
                   </div>
                   <div className="wm-setting-row">
                     <span className="wm-setting-title">Quit AuthG</span>
-                    <span className="wm-badge">⌘ + Q</span>
+                    <span className="wm-badge">{modKey} + Q</span>
                   </div>
                 </div>
               </div>
@@ -1258,8 +1267,8 @@ export function App() {
       ) : (
         <>
           {/* Main Vault Header */}
-          <header className="wm-header">
-            <div className="wm-title">
+          <header className="wm-header" data-tauri-drag-region>
+            <div className="wm-title" data-tauri-drag-region>
               <div className="wm-logo-icon">
                 <ShieldCheck size={13} />
               </div>
@@ -1306,7 +1315,7 @@ export function App() {
               <button
                 id="header-quit-btn"
                 className="wm-btn-icon"
-                title="Quit AuthG (⌘Q)"
+                title={`Quit AuthG (${modKey}Q)`}
                 onClick={() => tauriInvoke("quit_app").catch(() => {})}
               >
                 <Power size={12} />
@@ -1323,7 +1332,7 @@ export function App() {
                 type="text"
                 autoFocus
                 className="wm-search-input"
-                placeholder="Search accounts (⌘K)..."
+                placeholder={`Search accounts (${modKey}K)...`}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
@@ -1366,7 +1375,7 @@ export function App() {
                       ? `${vaultError}. Nothing will be saved until it opens. Restart AuthG and allow Keychain access.`
                       : searchQuery
                       ? `No accounts found for "${searchQuery}"`
-                      : "Import your Google Authenticator export QR code, paste a screenshot with ⌘V, or add a key manually."}
+                      : `Import your Google Authenticator export QR code, paste a screenshot with ${modKey}V, or add a key manually.`}
                   </p>
                 </div>
                 {!searchQuery && !vaultError && (
@@ -1377,10 +1386,10 @@ export function App() {
                         className="wm-btn-primary"
                         style={{ justifyContent: "center", fontSize: 11, padding: "8px 10px" }}
                         onClick={() => {
-                          showToast("Press ⌘V anywhere to paste QR code from clipboard");
+                          showToast(`Press ${modKey}V anywhere to paste QR code from clipboard`);
                         }}
                       >
-                        <Upload size={13} /> Paste ⌘V
+                        <Upload size={13} /> Paste {modKey}V
                       </button>
                       <button
                         id="empty-file-btn"
@@ -1543,7 +1552,7 @@ export function App() {
               {activeImportTab === "qr" && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   <p style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.4 }}>
-                    On your phone: open <strong>Google Authenticator → Transfer accounts → Export</strong>, then upload screenshot, scan with camera, or press <strong>⌘V</strong>:
+                    On your phone: open <strong>Google Authenticator → Transfer accounts → Export</strong>, then upload screenshot, scan with camera, or press <strong>{modKey}V</strong>:
                   </p>
 
                   {isCameraActive ? (
@@ -1588,7 +1597,7 @@ export function App() {
                           {isDraggingFile ? "Release to import QR code" : "Drop QR screenshot or click to upload"}
                         </span>
                         <span style={{ fontSize: 10, color: "var(--muted)" }}>
-                          Tip: You can also press ⌘V anytime to paste
+                          Tip: You can also press {modKey}V anytime to paste
                         </span>
                         <input
                           id="qr-file-input"
